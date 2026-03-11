@@ -129,6 +129,44 @@ class CodeSectionParser:
                 "span_str": span_
             })
         return to_return
+    
+
+    def chg_tag(self, code, lang="python"):
+        """
+        Args:
+            post_str: a str
+
+        Returns:
+            a list of dict where each dict has the format of
+            {
+                "off_beg": an int,
+                "off_end": an int,
+                "span_str": a str
+            }
+        """
+        st_pattern = r'<pre(?: class="[^"]*")?><code>'
+        st_dst = f"```{lang}\n"
+        code = re.sub(st_pattern, st_dst, code, count=0, flags=0)
+        
+        end_dst = "```"
+        end_pattern =r'</code></pre>'
+        code = re.sub(end_pattern, end_dst, code, count=0, flags=0)
+        return code
+    
+    def clean_q_str_for_annotation(self, post_str):
+        """
+        Args:
+            post_str: a str
+
+        Returns:
+            a str for human annotation
+        """
+        htmlp = HTMLParser()
+        t_body_str = self.chg_tag(post_str)
+        clean_str = htmlp.get_html_cleaned_str(t_body_str)
+        clean_str = re.sub(r";(?=\S)", "", clean_str)
+        
+        return clean_str
 
 if __name__ == "__main__":
     from data_loader import DataLoader
