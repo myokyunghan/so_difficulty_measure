@@ -207,3 +207,7 @@ __marimo__/
 
 *config.py
 *venv*
+*.csv
+*.xlsx
+
+*.png
