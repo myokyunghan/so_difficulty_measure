@@ -32,4 +32,6 @@ Date_Setting = {
 
     "2021to2024": generate_4week_timestamps(datetime(2022,11,30), "2021to2024"),
     "2021to2025": generate_4week_timestamps(datetime(2022,11,30), "2021to2025"),
+
+    "2020to2025": generate_4week_timestamps(datetime(2022,11,30), "2020to2025"),
 }

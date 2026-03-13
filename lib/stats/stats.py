@@ -7,11 +7,11 @@ import matplotlib.pyplot as plt
 
 
 class Stats:
-    def __init__(self, x, y, dof, c):
+    def __init__(self, x, y, dof, c, cutoff = None):
         self.x                  = x
         self.y                  = y
         self.dof                = dof
-        self.split_idx          = int(len(x)/2)
+        self.split_idx          = int(len(x)/2) if cutoff is None else cutoff
         self.c                  = c
 
         self.y_predict          = 0
