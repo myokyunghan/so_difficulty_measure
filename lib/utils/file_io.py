@@ -71,6 +71,7 @@ def create_dir(path):
     if CONSTANTS.verbose_loading:
         print(f"[Creating... ] {path}")   
     os.makedirs(path, exist_ok=True)
+    return path
 
 
 def load_df(path, col_list):

@@ -2,7 +2,7 @@ import os.path
 import numpy as np
 from matplotlib import pyplot as plt
 import seaborn as sns
-from setting_for_sda.color_setting import Color_Setting
+from setting_for_sdm.color_setting import Color_Setting
 from lib.utils.statistics import *
 import lib.stats.stats as st
 from lib.visualization.font_setting import font_setting
@@ -44,11 +44,11 @@ class PlotGen:
         Returns:
             None
         """
-        plt.title(title)
+        plt.title(title, fontsize=font_setting['title'])
         if x_label is not None:
-            plt.xlabel(x_label)
+            plt.xlabel(x_label, fontsize=font_setting['label'])
         if y_label is not None:
-            plt.ylabel(y_label)
+            plt.ylabel(y_label, fontsize=font_setting['label'])
 
     def draw_trend_line_and_get_rho(self, x, y, deg=1):
         """
@@ -289,13 +289,6 @@ class PlotGen:
     #     ax.tick_params(axis='both', labelsize=16)
 
     def draw_topic_stack(self, ax, title, panel_label, proportion, order_list, colors, alpha=0.9):
-        """
-        개선된 스택 바 차트
-        - 패널 레이블 (A, B, C, D) 추가
-        - 폰트 크기 통일 (Nature/Science 스타일)
-        - axvline 스타일 개선
-        - 그리드 추가로 가독성 향상
-        """
         rel_week = sorted(proportion['rel_week'].unique())
         bottom = np.zeros(len(rel_week))
 
@@ -317,37 +310,34 @@ class PlotGen:
                 width=1.0,
                 align='center',
                 alpha=alpha,
-                linewidth=0,          # ← 바 테두리 제거 (깔끔)
+                linewidth=0,         
             )
             bottom += count_full
 
-        # Y축 범위
+
         ax.set_ylim(0, bottom.max() * 1.05)
 
-        # ChatGPT 출시 기준선 — 더 얇고 세련되게
+
         ax.axvline(x=0, color='#CC3333', linestyle='--', linewidth=1.2, zorder=5)
 
-        # 패널 레이블 (A, B, C, D) — Science 계열 필수
+
         ax.text(-0.08, 1.08, panel_label,
                 transform=ax.transAxes,
                 fontsize=font_setting['panel'], fontweight='bold',
                 va='bottom', ha='left')
 
-        # 제목
+
         ax.text(0.5, 1.08, f'{title}',
             transform=ax.transAxes,
             fontsize=font_setting['title'], ha='center', va='bottom')
 
-        # ax.set_title(title, fontsize=font_setting['title'], pad=6)
 
         # 축 폰트 통일 (7–9pt 권장, Nature/Science 기준)
         ax.tick_params(axis='both', labelsize=font_setting['tick'])
 
-        # Y축 레이블
-        # ax.set_ylabel('Accumulated topic share', fontsize=9)
 
-        # X축 레이블
-        # ax.set_xlabel('Week relative to ChatGPT release', fontsize=9)
+
+
 
         # 불필요한 테두리 제거 (top, right spine)
         ax.spines['top'].set_visible(False)
@@ -356,38 +346,7 @@ class PlotGen:
         # 가로 그리드 (옅게)
         ax.yaxis.grid(True, linestyle=':', linewidth=0.5, color='gray', alpha=0.5, zorder=0)
         ax.set_axisbelow(True)
-    # def draw_topic_stack(self, ax, title, proportion, order_list, colors, alpha):
-        
-    #     rel_week = sorted(proportion['rel_week'].unique())
-    #     bottom = np.zeros(len(rel_week))
-
-    #     for idx, topic in enumerate(order_list):
-
-    #         t_p = proportion[proportion['Topic'] == topic]
-
-    #         count_full = np.zeros(len(rel_week))
-    #         for i, rw in enumerate(t_p['rel_week']):
-    #             if rw in rel_week:
-    #                 rw_idx = rel_week.index(rw)
-    #                 count_full[rw_idx] = t_p.loc[t_p['rel_week'] == rw, 'proportion'].values[0]
-
-    #         ax.bar(
-    #             rel_week,
-    #             count_full,
-    #             bottom=bottom,
-    #             label=topic,
-    #             color=colors[idx],
-    #             width=1.0,
-    #             align='center',
-    #             alpha=alpha
-    #         )
-
-    #         bottom += count_full
-
-    #     ax.set_ylim(0, bottom.max()*1.05)
-    #     ax.axvline(x=0, color='tab:red', linestyle='-.', linewidth=1)
-    #     ax.set_title(title, fontsize=25)
-    #     ax.tick_params(axis='both', labelsize=16)
+    
 
 if __name__ == "__main__":
     from lib.utils.data_loader import DataLoader

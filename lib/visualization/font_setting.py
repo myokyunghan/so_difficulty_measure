@@ -18,5 +18,6 @@ font_setting = {'title' : 22,
                 'p-value' : 15,
                 'panel' : 25,
                 'tick' : 15,
-                'legend':15
+                'legend':15,
+                'label':15
                 }
