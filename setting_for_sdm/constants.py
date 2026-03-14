@@ -1,5 +1,3 @@
-from datetime import datetime
-
 class CONSTANTS:
     verbose_loading = False
     all_topics_list = list(range(0, 50))
@@ -33,5 +31,7 @@ class CONSTANTS:
 #                 'vba':'vba'
 #     }
     
-
+    DIFF_DICT = {'Difficulty Level : Basic':        '<Difficulty Level>0</Difficulty Level>' ,
+            'Difficulty Level : Intermediate':  '<Difficulty Level>1</Difficulty Level>', 
+            'Difficulty Level : Advanced':      '<Difficulty Level>2</Difficulty Level>'}
 

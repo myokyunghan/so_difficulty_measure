@@ -65,7 +65,7 @@ from lib.annotation.loghander import *
 import lib.annotation.D_Annotation as da
 import lib.annotation.Self_Consistency as sc
 import lib.annotation.Sample_Insert as si
-import lib.annotation.Q_Extract as qe
+import lib.annotation.tools.Q_Extract as qe
 import lib.annotation.SampleSelf_Consistency as ssc
 
 import lib.database.DBConn as db_conn

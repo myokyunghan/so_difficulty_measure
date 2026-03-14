@@ -22,18 +22,19 @@ class ModelRunner:
         self.run()
 
     def run(self):
-        self.run_experiment(self.runner_opt.user_opt['experiment_option'])
-        Annotation_Experiment(self.runner_opt.user_opt['experiment_option'])
+        self.run_experiment(self.runner_opt.user_opt)
         self.save_option()
         
-    def run_experiment(self, experiment_option) :
-        print(f">>>>>>>Experiment Start<<<<<<<<{experiment_option['llm_model']}_{experiment_option['few_shot_n']}_{experiment_option['test_n']}_{experiment_option['q_src_yn']}_{experiment_option['p_ver']}_{experiment_option['sc_num']}")
+    def run_experiment(self, user_opt) :
+        experiment_option = user_opt['experiment_option']
+        print(f">>>>>>>Experiment Start<<<<<<<<{experiment_option['llm_model']}_{experiment_option['few_shot_n']}_{experiment_option['test_n']}_{experiment_option['q_src_yn']}_{experiment_option['prompt_ver']}_{experiment_option['sc_num']}")
         for i in range(experiment_option['iteration_num']):
             print(f"Test {i} Running: ")
-            experiment_option['loop_num'] = i
-            Annotation_Experiment(experiment_option)
+            user_opt['experiment_option']['loop_num'] = i
+            exp = Annotation_Experiment(user_opt)
+            exp()
         
-        print(f">>>>>>>Experiment Start<<<<<<<<{experiment_option['llm_model']}_{experiment_option['few_shot_n']}_{experiment_option['test_n']}_{experiment_option['q_src_yn']}_{experiment_option['p_ver']}_{experiment_option['sc_num']}")
+        print(f">>>>>>>Experiment Start<<<<<<<<{experiment_option['llm_model']}_{experiment_option['few_shot_n']}_{experiment_option['test_n']}_{experiment_option['q_src_yn']}_{experiment_option['prompt_ver']}_{experiment_option['sc_num']}")
 
 
     def save_option(self):

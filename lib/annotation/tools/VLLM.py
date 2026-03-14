@@ -1,4 +1,5 @@
 from vllm import LLM, SamplingParams
+from setting_for_sdm.llm_setting import vllm_setting
 
 class VLLM:
 
@@ -17,7 +18,7 @@ class VLLM:
             return
         self._initialized = True
 
-        conf_for_llm = conf.VLLM_CONF[llm_model][model_name]
+        conf_for_llm = vllm_setting[llm_model][model_name]
 
         llm_kwargs = {
             'model': conf_for_llm['model'],
