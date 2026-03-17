@@ -1,10 +1,34 @@
-from lib.annotation.import_files import *
-from lib.annotation.VLLM import VLLM
+from transformers import AutoTokenizer
+from openai import OpenAI
+from ollama import chat
+from transformers import AutoTokenizer
+
+from lib.annotation.tools.VLLM import VLLM
+from lib.annotation.tools.loghander import *
+
+from setting_for_sdm.prompt import prompt
+from setting_for_sdm.llm_setting import (vllm_setting, ollama_setting)
+from setting_for_sdm.excel import excel
+from setting_for_sdm.constants import CONSTANTS
+from setting_for_sdm.config import OEPN_AI_KEY
+
+
+from run_project.annotate_difficulty.options import RunnerOptions
+import lib.utils.file_io as file_io
+import lib.database.DBInterface as db_interface
+
+import logging
+import pandas as pd
+import numpy as np
+from tqdm import tqdm
+import os
+import multiprocessing as mp
+import re
 # https://github.com/meta-llama/llama-recipes/blob/main/recipes/quickstart/Prompt_Engineering_with_Llama_3.ipynb
-class SampleSelf_Consistency_re:
-    def __init__(self, annoate_target):  
-        self.ollama         = 'llama-3.1-70b-instruct-lorablated.Q4_K_M:latest'
-        self.chatgpt        = OpenAI(api_key= conf.OEPN_AI_KEY)
+class Annotation_Operation:
+    def __init__(self, annoate_target, user_option):  
+        self.ollama         = ollama_setting['version']
+        self.chatgpt        = OpenAI(api_key= OEPN_AI_KEY)
 
         self.df             = pd.DataFrame()
         self.eval_prompt    = []
@@ -19,27 +43,43 @@ class SampleSelf_Consistency_re:
         self.ver            = int(annoate_target.iloc[0,0])
 
         # predefined param
-        self.llm_model      = param['llm_model']
-        self.model_ver      = param['model_ver']
-        self.few_shot_n     = param['few_shot_n']
-        self.q_src_yn       = param['q_src_yn']
-        self.sys_prompt     = param['p_ver'] 
-        self.sf_num         = param['sf_num']
-        self.temperature    = param['temperature']
-        self.excel_ver      = param['excel_ver']
-        self.tk             = AutoTokenizer.from_pretrained(conf.VLLM_CONF[self.llm_model]['model'], use_fast=True)
-        self.save_dir       = f'{conf.DATA_PATH}{conf.ANNO_RESULT}/{self.model_ver}/{self.ver}'
+        operation_option            = user_option['operation_option']
+        self.annotation_file_path   = user_option['annotation_file_path']
+        self.llm_model              = operation_option['llm_model']
+        self.model_name             = operation_option['model_ver']
+        self.few_shot_n             = operation_option['few_shot_n']
+        self.q_src_yn               = operation_option['q_src_yn']
+        self.sys_prompt             = prompt[operation_option['prompt_ver']]
+        self.p_ver                  = operation_option['prompt_ver']
+        self.sc_num                 = operation_option['sc_num']
+        self.temperature            = operation_option['temperature']
+        self.excel_ver              = operation_option['excel_ver']
+        self.operation_option       = operation_option   # param.json 저장용
+
+        self.tk                 = AutoTokenizer.from_pretrained(vllm_setting[self.llm_model][self.model_name]['model'], use_fast=True)
+        self.save_dir           = f'{user_option["save_dir"]}'
         
         # log setting
-        self.logger         = get_userlogger()
+        self.logger         = get_userlogger(user_option['log_dir'])
         self.logger.setLevel(logging.INFO)
         
-        self.logger.info(f'param for sample self consistency : {self.llm_model} | {self.few_shot_n} | {self.q_src_yn} | {self.sys_prompt} | {self.sf_num} | {self.temperature} | {self.excel_ver}' )
+        self.logger.info(f'param for sample self consistency : {self.llm_model} | {self.few_shot_n} | {self.q_src_yn} | {self.sys_prompt} | {self.sc_num} | {self.temperature} | {self.excel_ver}' )
         if not os.path.exists(self.save_dir):
             os.makedirs(self.save_dir)  
 
+    def __call__(self):
+        self.run()
+
+    def run(self):
+        self.get_annotation_data()
+        e_f_dict = self.random_selection()
+        self.write_prompt(e_f_dict)
+        self.calc_acc()
+
+        
+
     def chk_max_length(self, message):
-        self.tk             = AutoTokenizer.from_pretrained(conf.VLLM_CONF[self.llm_model]['model'], use_fast=True)
+        self.tk             = AutoTokenizer.from_pretrained(vllm_setting[self.llm_model][self.model_name]['model'], use_fast=True)
         prompt = self.tk.apply_chat_template(
             message,
             tokenize=False,
@@ -47,49 +87,48 @@ class SampleSelf_Consistency_re:
         )
         prompt_tokens = len(self.tk.encode(prompt))
 
-        MAX_CONTEXT = self.tk.model_max_length 
+        # MAX_CONTEXT = self.tk.model_max_length
+        MAX_CONTEXT = vllm_setting[self.llm_model][self.model_name]['max_model_len']
         MAX_GENERATION = 256
         SAFETY_MARGIN = 128
 
-        tot_promt_tk = prompt_tokens + MAX_GENERATION + SAFETY_MARGIN
+        tot_prompt_tk = prompt_tokens + MAX_GENERATION + SAFETY_MARGIN
 
-        return (tot_promt_tk > MAX_CONTEXT)        
-        
+        if tot_prompt_tk > MAX_CONTEXT:
+            self.logger.warning(f"[Warning] Token limit exceeded: {tot_prompt_tk} > {MAX_CONTEXT}")
+            return True
+        else:
+            self.logger.warning(f"[Info] Token is safe: {tot_prompt_tk} < {MAX_CONTEXT}")
+            return False
+
     def get_annotation_data(self):
-        q_src_yn = param['q_src_yn']
-        file_path = f'{conf.DATA_PATH}/data/q_output'
-        
-        if q_src_yn == "Y":
-            file_path = f'{file_path}_code_y'
-        
-        file_path = f'{file_path}{excel[self.excel_ver]}'
-        self.df = pd.read_csv(f'{file_path}.csv')
+        file_path = self.annotation_file_path
+        self.df = pd.read_csv(f'{file_path}')
 
     def set_fewshot_example(self, few_shot_n):
-        diff_idx = {x : list(self.df[self.df['answer']==x].id) for x in list(conf.DIFF_DICT.values())}
+        diff_idx = {x : list(self.df[self.df['answer']==x].id) for x in list(CONSTANTS.DIFF_DICT.values())}
         
         fewshot_q_list = []
         for key, value in diff_idx.items():
             diff_population = value
             fewshot_q_list.append(np.random.choice(diff_population, size=few_shot_n, replace=True))
         return np.concatenate(fewshot_q_list)
-
-
+    
     def random_selection(self):
-        few_shot_n = param['few_shot_n']
+        few_shot_n = self.few_shot_n
 
         diff_s_idx = {}
         target_q_list = self.annoate_target.id
 
         for target_q in target_q_list:
             diff_s_idx[target_q] = dict()
-            for sf_idx in range(self.sf_num):
+            for sf_idx in range(self.sc_num):
                 diff_s_idx[target_q][sf_idx] = self.set_fewshot_example(few_shot_n)
         return diff_s_idx
-            
+
 
     def write_prompt(self, e_f_dict) : 
-        few_shot_n = param['few_shot_n']
+        few_shot_n = self.few_shot_n
         
         # write system prompt & examples
         for eval_id, fewshot_dict in e_f_dict.items() : 
@@ -124,16 +163,19 @@ class SampleSelf_Consistency_re:
                 else :
                     self.message_list.append(message)
 
+    # -------------------------------------------------------------------------
+    # 4. DB insert
+    # -------------------------------------------------------------------------
+
     def insert_result(self, result_df):
-        db = db_conn.DBConn()
+        db_if = db_interface.DBInterface()
         result_df = result_df[['ver', 'creationdate', 'id']].drop_duplicates()
 
         data_list = [[int(x[1]), x[2], int(x[3])] for x in result_df.to_records()]
         sql = 'INSERT INTO tt_posts_difficulty_done  VALUES %s'
+        db_if.execute_bulk_values(sql, data_list)     
 
-        with db.cursor() as cur:
-            psycopg2.extras.execute_values(cur, sql, data_list, template=None, page_size=100)
-            db.commit()     
+
 
     def calc_acc_for_v(self, llm_model, few_shot_n, q_src_yn):
         self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v start!')
@@ -150,9 +192,6 @@ class SampleSelf_Consistency_re:
         result_df = pd.merge(self.annoate_target[['ver', 'creationdate', 'id']], result_df,on = 'id')
         self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v, save result! {self.save_dir}/{self.date}.csv')
         result_df.to_csv(f'{self.save_dir}/{self.date}.csv')
-        file_io.save_json(param,                    f'{self.save_dir}/param.json')
-        file_io.save_json(conf.VLLM_CONF[llm_model], f'{self.save_dir}/llm_config.json')
-
         self.insert_result(result_df)
         return result_df
         # /home/mghan/sopjt/git/venv_stackoverflow_src/bin/python /home/mghan/sopjt/git/stackoverflow_src_2425/difficulty/automate_annotation/main.py ver50000
@@ -209,13 +248,6 @@ class SampleSelf_Consistency_re:
             # print(self.eval_prompt)
             self.calc_acc_for_c(llm_model, few_shot_n, q_src_yn)
 
-        elif llm_model == 'vl' : # vLLM + llama
-            print("VLLM")
-            self.vllm = VLLM(llm_model)
-            self.calc_acc_for_v(llm_model, few_shot_n, q_src_yn)
-
-        
-        elif llm_model == 'vq' : # vLLM + qwen
-            print("VLLM")
-            self.vllm = VLLM(llm_model)
+        elif self.llm_model in ('vl', 'vq'):
+            self.vllm = VLLM(self.llm_model, self.model_name)
             self.calc_acc_for_v(llm_model, few_shot_n, q_src_yn)

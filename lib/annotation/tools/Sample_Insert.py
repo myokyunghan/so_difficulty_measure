@@ -1,5 +1,8 @@
-from lib.annotation.import_files import *
+import lib.database.DBInterface as db_interface
+from setting_for_sdm.sequence import sequence
 
+import pandas as pd
+import numpy as np
 
 class Sample_Insert: 
     def __init__(self, st_dt, end_dt, sample_num, seed, posttype, num_of_date):
@@ -14,7 +17,7 @@ class Sample_Insert:
     def get_id_list(self, posttype, st_dt, end_dt):
         print("sample_insert> get_id_list") 
         if posttype == "1" : 
-            db = db_conn.DBConn()
+            db_if = db_interface.DBInterface()
 
             q_sql = """select to_char(a.creationdate, 'yyyy-mm-dd') as creationdate, 
                             a.id 
@@ -26,13 +29,7 @@ class Sample_Insert:
                                     from tt_posts_difficulty_annotated x 
                                 where a.id = x.id)
                 """ 
-            with db.cursor() as cur:
-                cur.execute(
-                    q_sql,
-                    ('%<python>%', posttype, st_dt, end_dt)
-                )
-                rows = cur.fetchall()
-
+            rows = db_if.execute_query(q_sql, (f"%<python>%",posttype, st_dt, end_dt))
             q_output = pd.DataFrame(rows, columns = ['creationdate','id'])
             return q_output
 
@@ -93,34 +90,21 @@ class Sample_Insert:
         dt_list = list(p_id_df['creationdate'].unique())
 
         print("sample_insert > create connection")
-        db = db_conn.DBConn()
-        
-        try:
-            c_sql = """select nextval('{0}');""" 
-            with db.cursor() as cur:
-                cur.execute(
-                    c_sql.format(self.seq_nm)
-                )
-                var = cur.fetchall()[0]
-    
-            for dt in dt_list : 
-                dt_p_id_list = p_id_df.loc[p_id_df['creationdate'] == dt, 'id'].values
-                print("sample_insert > create connection> dt_p_id_list>", dt, len(dt_p_id_list))
+        db_if = db_interface.DBInterface()
 
-                first_ann_q_id = [[int(var[0]),dt , int(x)] for x in np.random.choice(dt_p_id_list, size=self.sample_num, replace=False)]
-                print("sample_insert > create connection> first_ann_q_id>", dt, first_ann_q_id)
+        c_sql = """select nextval(%s);""" 
+        rows = db_if.execute_query(c_sql, (self.seq_nm,))
+        var = rows[0]
 
-                sql = f'INSERT INTO tt_posts_difficulty_target  VALUES %s'
+        for dt in dt_list : 
+            dt_p_id_list = p_id_df.loc[p_id_df['creationdate'] == dt, 'id'].values
+            print("sample_insert > create connection> dt_p_id_list>", dt, len(dt_p_id_list))
 
-                with db.cursor() as cur:
-                    psycopg2.extras.execute_values(cur, sql, first_ann_q_id, template=None, page_size=100)
-                    db.commit()
-        except Exception as e:
-            print('Error : ', e)
-        else:
-            print("insert_db : else - ")
-        finally:
-            cur.close()           
+            first_ann_q_id = [[int(var[0]),dt , int(x)] for x in np.random.choice(dt_p_id_list, size=self.sample_num, replace=False)]
+            print("sample_insert > create connection> first_ann_q_id>", dt, first_ann_q_id)
+
+            sql = f'INSERT INTO tt_posts_difficulty_target  VALUES %s'
+            db_if.execute_bulk_values(sql, first_ann_q_id)     
 
     
 

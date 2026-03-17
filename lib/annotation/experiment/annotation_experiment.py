@@ -182,21 +182,6 @@ class Annotation_Experiment:
                 else :
                     self.message_list.append(message)
 
-    def chk_leftover(self, result_df):
-        self.logger.info(f'>>>>>>>>>>>>>>>chk_leftover start!')
-        tmp = result_df.copy()
-        tmp['gold'] = tmp['answer'].apply(lambda x : re.sub(r'[^012]', '', x))
-        tmp['o_result'] = tmp['result'].apply(lambda x : re.sub(r'[^012]', '', x))
-        tmp = tmp[tmp['o_result'].isin(['1', '0', '2'])]
-
-        
-        gold_df = tmp[['id', 'gold']].drop_duplicates()
-        chk_cnt = tmp.groupby(['id', 'o_result']).count().reset_index()[['id', 'o_result', 'question']]
-        chk_cnt = chk_cnt.rename(columns = {'question': 'sc_cnt'})
-        leftover_list = list(chk_cnt.loc[chk_cnt['sc_cnt'] != self.sc_num, 'id'])
-        
-        return leftover_list
-
 
     def calc_acc_for_v(self, llm_model, few_shot_n, q_src_yn):
         self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v start!')

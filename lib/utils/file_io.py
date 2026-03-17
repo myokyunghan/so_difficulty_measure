@@ -55,7 +55,7 @@ def save_src_as_file(to_save, path):
         file.write(to_save.encode())
 
 
-def create_dir(path):
+def create_dir(path, deleting=False):
     """
 
     Args:
@@ -65,8 +65,8 @@ def create_dir(path):
     Returns:
         None
     """
-    if os.path.exists(path):
-        print(f"[Deleteing... ] {path}")
+    if deleting and os.path.exists(path):
+        print(f"[Deleting... ] {path}")
         shutil.rmtree(path)
     if CONSTANTS.verbose_loading:
         print(f"[Creating... ] {path}")   

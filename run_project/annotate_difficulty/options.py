@@ -56,7 +56,7 @@ class RunnerOptions:
                                     "save_dir": f"{path_list['data_root_dir']}/result/annotate_difficulty/run_id_{run_id}",    
                                     "log_dir": f"{path_list['data_root_dir']}/result/annotate_difficulty/run_id_{run_id}/log",    
                                     "selected_tags": None,
-                                    "experiment_option" : dict_
+                                    "operation_option" : dict_
                         }
         create_dir(self.user_opt['log_dir'])
         

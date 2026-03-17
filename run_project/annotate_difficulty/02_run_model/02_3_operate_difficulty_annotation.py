@@ -1,9 +1,8 @@
-from lib.annotation.import_files import *
+import re
 import argparse
-import lib.annotation.D_Annotation as da
 import lib.annotation.tools.Q_Extract as qe
-import lib.annotation.SampleSelf_Consistency as ssc
-import lib.database.DBConn as db_conn
+from lib.annotation.operation.annotation_operation import Annotation_Operation
+
 
 def main(ver):
     print ("start main!")
