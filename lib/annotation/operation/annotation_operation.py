@@ -34,7 +34,6 @@ class Annotation_Operation:
         self.eval_prompt    = []
         self.result         = []
         self.message_list   = []
-        self.eval_q_list    = []
 
         # init param
         self.annoate_target = annoate_target.reset_index(drop=True)
@@ -57,8 +56,8 @@ class Annotation_Operation:
         self.operation_option       = operation_option   # param.json 저장용
 
         self.tk                 = AutoTokenizer.from_pretrained(vllm_setting[self.llm_model][self.model_name]['model'], use_fast=True)
-        self.save_dir           = f'{user_option["save_dir"]}'
-        
+        self.save_dir           = f'{user_option["save_dir"]}/{self.llm_model}/{self.ver}'
+
         # log setting
         self.logger         = get_userlogger(user_option['log_dir'])
         self.logger.setLevel(logging.INFO)
@@ -127,41 +126,79 @@ class Annotation_Operation:
         return diff_s_idx
 
 
-    def write_prompt(self, e_f_dict) : 
-        few_shot_n = self.few_shot_n
+    # def write_prompt(self, e_f_dict) : 
+    #     few_shot_n = self.few_shot_n
         
-        # write system prompt & examples
-        for eval_id, fewshot_dict in e_f_dict.items() : 
+    #     # write system prompt & examples
+    #     for eval_id, fewshot_dict in e_f_dict.items() : 
         
-            for sc_idx, fewshot_id_list in fewshot_dict.items() : 
-                message = []
-                message.append({"role": "system", "content": self.sys_prompt})
-                self.eval_q_list.append(eval_id)
+    #         for sc_idx, fewshot_id_list in fewshot_dict.items() : 
+    #             message = []
+    #             message.append({"role": "system", "content": self.sys_prompt})
+    #             self.eval_q_list.append(eval_id)
 
-                for fewshot_id in fewshot_id_list : 
+    #             for fewshot_id in fewshot_id_list : 
 
-                    q_string = self.df.loc[self.df['id'] == fewshot_id, 'question'].iloc[0]
-                    a_string = self.df.loc[self.df['id'] == fewshot_id, 'answer'].iloc[0]
-                    t_string = self.annoate_target.loc[self.annoate_target['id']==eval_id, 'question'].iloc[0]
+    #                 q_string = self.df.loc[self.df['id'] == fewshot_id, 'question'].iloc[0]
+    #                 a_string = self.df.loc[self.df['id'] == fewshot_id, 'answer'].iloc[0]
+    #                 t_string = self.annoate_target.loc[self.annoate_target['id']==eval_id, 'question'].iloc[0]
                     
-                    q_prompt = """\nHere is the examples of question\n"""
-                    q_prompt = q_prompt + q_string
+    #                 q_prompt = """\nHere is the examples of question\n"""
+    #                 q_prompt = q_prompt + q_string
 
-                    message.append({"role": "user", "content": q_prompt})
-                    message.append({"role": "assistant", "content": a_string})
+    #                 message.append({"role": "user", "content": q_prompt})
+    #                 message.append({"role": "assistant", "content": a_string})
                     
-                target_post="""\nHere is the target post. Answer the "Difficulty Level".\n"""
-                target_post = target_post+"""\n<target_post>\n"""
-                target_post = target_post+t_string+'\n'
-                target_post = target_post+"""</target_post>\n"""
+    #             target_post="""\nHere is the target post. Answer the "Difficulty Level".\n"""
+    #             target_post = target_post+"""\n<target_post>\n"""
+    #             target_post = target_post+t_string+'\n'
+    #             target_post = target_post+"""</target_post>\n"""
                 
-                message.append({"role": "user", "content": target_post})
+    #             message.append({"role": "user", "content": target_post})
                 
-                if self.chk_max_length(message) :
-                    e_f_dict[eval_id][sc_idx] = self.set_fewshot_example(few_shot_n)
-                    self.write_prompt(e_f_dict, few_shot_n)
-                else :
-                    self.message_list.append(message)
+    #             if self.chk_max_length(message) :
+    #                 e_f_dict[eval_id][sc_idx] = self.set_fewshot_example(few_shot_n)
+    #                 self.write_prompt(e_f_dict)
+    #             else :
+    #                 self.message_list.append(message)
+
+    def write_prompt(self, e_f_dict):
+
+        for eval_id, fewshot_dict in e_f_dict.items():
+            for sc_idx, fewshot_id_list in fewshot_dict.items():
+
+                while True:
+                    message = []
+                    message.append({"role": "system", "content": self.sys_prompt})
+
+                    for fewshot_id in fewshot_id_list:
+
+                        q_string = self.df.loc[self.df['id'] == fewshot_id, 'question'].iloc[0]
+                        a_string = self.df.loc[self.df['id'] == fewshot_id, 'answer'].iloc[0]
+                        t_string = self.annoate_target.loc[self.annoate_target['id']==eval_id, 'question'].iloc[0]
+
+                        q_prompt = "\nHere is the examples of question\n" + q_string
+
+                        message.append({"role": "user", "content": q_prompt})
+                        message.append({"role": "assistant", "content": a_string})
+
+                    target_post = (
+                        "\nHere is the target post. Answer the \"Difficulty Level\".\n"
+                        "\n<target_post>\n"
+                        + t_string + "\n</target_post>\n"
+                    )
+
+                    message.append({"role": "user", "content": target_post})
+
+                    if self.chk_max_length(message):
+                        # 다시 샘플링
+                        fewshot_id_list = self.set_fewshot_example(self.few_shot_n)
+                    else:
+                        self.message_list.append({
+                                                    "eval_id": eval_id,
+                                                    "message": message
+                                                })
+                        break
 
     # -------------------------------------------------------------------------
     # 4. DB insert
@@ -177,37 +214,74 @@ class Annotation_Operation:
 
 
 
+    # def calc_acc_for_v(self, llm_model, few_shot_n, q_src_yn):
+    #     self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v start!')
+        
+    #     for idx, message in tqdm(enumerate(self.message_list)):
+    #         tmp = []
+    #         self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v, ask VLLM start!')
+    #         response = self.vllm.llm.chat(message, sampling_params=self.vllm.params) 
+    #         self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v, ask VLLM end!')
+    #         tmp.append(self.eval_q_list[idx])
+    #         tmp.append(response[0].outputs[0].text)
+    #         self.result.append(tmp)
+    #     result_df = pd.DataFrame(self.result, columns = ['id', 'result'])
+    #     result_df = pd.merge(self.annoate_target[['ver', 'creationdate', 'id']], result_df,on = 'id')
+    #     self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v, save result! {self.save_dir}/{self.date}.csv')
+    #     result_df.to_csv(f'{self.save_dir}/{self.date}.csv')
+    #     self.insert_result(result_df)
+    #     return result_df
+
+
     def calc_acc_for_v(self, llm_model, few_shot_n, q_src_yn):
         self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v start!')
-        
-        for idx, message in tqdm(enumerate(self.message_list)):
+    
+        for item in tqdm(self.message_list):
             tmp = []
+            
+            eval_id = item["eval_id"]
+            message = item["message"]
+
             self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v, ask VLLM start!')
             response = self.vllm.llm.chat(message, sampling_params=self.vllm.params) 
             self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v, ask VLLM end!')
-            tmp.append(self.eval_q_list[idx])
+            
+            tmp.append(eval_id)
             tmp.append(response[0].outputs[0].text)
+            
             self.result.append(tmp)
-        result_df = pd.DataFrame(self.result, columns = ['id', 'result'])
-        result_df = pd.merge(self.annoate_target[['ver', 'creationdate', 'id']], result_df,on = 'id')
+
+        result_df = pd.DataFrame(self.result, columns=['id', 'result'])
+        result_df = pd.merge(self.annoate_target[['ver', 'creationdate', 'id']], result_df, on='id')
+
         self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v, save result! {self.save_dir}/{self.date}.csv')
         result_df.to_csv(f'{self.save_dir}/{self.date}.csv')
+
         self.insert_result(result_df)
         return result_df
         # /home/mghan/sopjt/git/venv_stackoverflow_src/bin/python /home/mghan/sopjt/git/stackoverflow_src_2425/difficulty/automate_annotation/main.py ver50000
  
     def calc_acc_for_l(self):           
-        for idx, message in tqdm(enumerate(self.message_list)):
-            data = []
-            response = chat( model      = self.ollama,
-                            messages    = message,
-                            )
-            data.append(self.eval_q_list[idx])
-            data.append(response['message']['content'])
-            self.result.append(data)
-        
-        result_df = pd.DataFrame(self.result, columns = ['id', 'result'])
-        result_df = pd.merge(self.annoate_target[['ver', 'creationdate', 'id']], result_df,on = 'id')
+        for item in tqdm(self.message_list):
+            eval_id = item["eval_id"]
+            message = item["message"]
+
+            response = chat(
+                model=self.ollama,
+                messages=message,
+            )
+
+            self.result.append({
+                "id": eval_id,
+                "result": response['message']['content']
+            })
+            
+        result_df = pd.DataFrame(self.result)
+        result_df = pd.merge(
+            self.annoate_target[['ver', 'creationdate', 'id']],
+            result_df,
+            on='id'
+        )
         
         result_df.to_csv(f'{self.save_dir}/{self.date}.csv')
         print(f'{self.save_dir}/{self.date}.csv')
@@ -216,26 +290,39 @@ class Annotation_Operation:
         return result_df
 
     def calc_acc_for_c(self):
-        for idx, message in tqdm(enumerate(self.message_list)):
-            data = []
+        self.result = []  # 안전하게 초기화
+
+        for item in tqdm(self.message_list):
+            eval_id = item["eval_id"]
+            message = item["message"]
+
             MODEL = "gpt-4o"
+
             response = self.chatgpt.chat.completions.create(
                 model=MODEL,
                 messages=message,
-                temperature= self.temperature,
+                temperature=self.temperature,
             )
-            data.append(self.eval_q_list[idx])
-            data.append(response['message']['content'])
-            self.result.append(data)
-        result_df = pd.DataFrame(self.result, columns = ['id', 'result'])
-        result_df = pd.merge(self.annoate_target[['ver', 'creationdate', 'id']], result_df,on = 'id')
-        
+
+            result_text = response.choices[0].message.content
+
+            self.result.append({
+                "id": eval_id,
+                "result": result_text
+            })
+
+        result_df = pd.DataFrame(self.result)
+        result_df = pd.merge(
+            self.annoate_target[['ver', 'creationdate', 'id']],
+            result_df,
+            on='id'
+        )
+
         result_df.to_csv(f'{self.save_dir}/{self.date}.csv')
         print(f'{self.save_dir}/{self.date}.csv')
 
         self.insert_result(result_df)
-
-
+        return result_df
 
     def calc_acc(self) :
         llm_model, few_shot_n, q_src_yn =  self.llm_model, self.few_shot_n, self.q_src_yn
