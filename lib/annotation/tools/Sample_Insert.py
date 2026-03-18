@@ -100,8 +100,12 @@ class Sample_Insert:
             dt_p_id_list = p_id_df.loc[p_id_df['creationdate'] == dt, 'id'].values
             print("sample_insert > create connection> dt_p_id_list>", dt, len(dt_p_id_list))
 
-            first_ann_q_id = [[int(var[0]),dt , int(x)] for x in np.random.choice(dt_p_id_list, size=self.sample_num, replace=False)]
-            print("sample_insert > create connection> first_ann_q_id>", dt, first_ann_q_id)
+            if len(dt_p_id_list) < self.sample_num : 
+                first_ann_q_id = [[int(var[0]),dt , int(x)] for x in dt_p_id_list]
+                print("sample_insert > create connection> dt_p_id_list> sample_num보다 작음>", dt, len(dt_p_id_list), self.sample_num)
+            else :
+                first_ann_q_id = [[int(var[0]),dt , int(x)] for x in np.random.choice(dt_p_id_list, size=self.sample_num, replace=False)]
+                print("sample_insert > create connection> first_ann_q_id>", dt, first_ann_q_id)
 
             sql = f'INSERT INTO tt_posts_difficulty_target  VALUES %s'
             db_if.execute_bulk_values(sql, first_ann_q_id)     
