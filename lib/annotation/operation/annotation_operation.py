@@ -87,7 +87,7 @@ class Annotation_Operation:
         prompt_tokens = len(self.tk.encode(prompt))
 
         # MAX_CONTEXT = self.tk.model_max_length
-        MAX_CONTEXT = vllm_setting[self.llm_model][self.model_name]['max_model_len']
+        MAX_CONTEXT = self.tk.model_max_length if vllm_setting[self.llm_model][self.model_name]['max_model_len'] is None else vllm_setting[self.llm_model][self.model_name]['max_model_len']
         MAX_GENERATION = 256
         SAFETY_MARGIN = 128
 
