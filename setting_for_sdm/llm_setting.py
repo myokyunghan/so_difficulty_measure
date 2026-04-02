@@ -35,8 +35,8 @@ vllm_setting = {
                         'models--cyankiwi--Qwen3-30B-A3B-Instruct-2507-AWQ-4bit': {
             
                             'model'                 : '/mnt/hdd/mghan/hf_model/models--cyankiwi--Qwen3-30B-A3B-Instruct-2507-AWQ-4bit/snapshots/2d3819dc1b75631b5255c25d2ff4d4824324d199',
-                            'tensor_parallel_size'  : 4,
-                            # 'tensor_parallel_size'  : 2,
+                            # 'tensor_parallel_size'  : 4,
+                            'tensor_parallel_size'  : 2,
                             'dtype'                 : "auto",
                             # 'max_model_len'         : 16384,
                             # 'max_model_len'         : 27000,

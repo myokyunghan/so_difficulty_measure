@@ -70,10 +70,18 @@ class Annotation_Operation:
         self.run()
 
     def run(self):
+        self.logger.info('start get_annotation_data')
         self.get_annotation_data()
+        self.logger.info('end get_annotation_data')
+        self.logger.info('start get_annotation_data')
         e_f_dict = self.random_selection()
+        self.logger.info('end get_annotation_data')
+        self.logger.info('start write_prompt')
         self.write_prompt(e_f_dict)
+        self.logger.info('end write_prompt')
+        self.logger.info('start calc_acc')
         self.calc_acc()
+        self.logger.info('end calc_acc')
 
         
 
@@ -336,5 +344,8 @@ class Annotation_Operation:
             self.calc_acc_for_c(llm_model, few_shot_n, q_src_yn)
 
         elif self.llm_model in ('vl', 'vq'):
+            self.logger.info('load VLLM')
             self.vllm = VLLM(self.llm_model, self.model_name)
+            self.logger.info('start calc_acc_for_v')
             self.calc_acc_for_v(llm_model, few_shot_n, q_src_yn)
+            self.logger.info('end calc_acc_for_v')

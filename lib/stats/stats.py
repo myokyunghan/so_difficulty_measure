@@ -7,10 +7,10 @@ import matplotlib.pyplot as plt
 
 
 class Stats:
-    def __init__(self, x, y, dof, c, cutoff = None):
+    def __init__(self, x, y, c, cutoff = None):
         self.x                  = x
         self.y                  = y
-        self.dof                = dof
+        self.dof                = None
         self.split_idx          = int(len(x)/2) if cutoff is None else cutoff
         self.c                  = c
 
@@ -48,10 +48,10 @@ class Stats:
         RSS_2 = np.sum(model2.resid ** 2)
 
         # 자유도 계산
-        k = self.dof  # 독립 변수 개수 (상수항 포함)
+        self.dof = int(model_full.df_model) + 1
         n1, n2 = len(y1), len(y2)
-        F_stat = ((RSS_full - (RSS_1 + RSS_2)) / k) / ((RSS_1 + RSS_2) / (n1 + n2 - 2 * k))
-        p_value    = 1 - f.cdf(F_stat, k, n1 + n2 - 2 * k)
+        F_stat = ((RSS_full - (RSS_1 + RSS_2)) / self.dof) / ((RSS_1 + RSS_2) / (n1 + n2 - 2 * self.dof))
+        p_value    = 1 - f.cdf(F_stat, self.dof, n1 + n2 - 2 * self.dof)
 
         self.y_predict  = model_full.predict(x_const)
         self.y1_predict = model1.predict(x1_const)
@@ -78,12 +78,17 @@ class Stats:
         # 신뢰구간 계산
         confidence = self.c
         n = len(x)
-        mean_x = np.mean(x)
-        dof = n - 2  # 자유도: 데이터 포인트 개수 - 2
-        t_value = t.ppf((1 + confidence) / 2., dof)  # 자유도를 명시적으로 추가
-        s_err = np.sqrt(np.sum((y - y_predict) ** 2) / dof)
-        conf_interval = t_value * np.sqrt(
-            s_err**2 * (1/n + (x - mean_x)**2 / np.sum((x - mean_x)**2))
-        )
+        dof = n -2  # 자유도: 데이터 포인트 개수 - 2
 
+        mean_x = np.mean(x)
+        
+        t_value = t.ppf((1 + confidence) / 2., dof)
+        s_err = np.sqrt(np.sum((y - y_predict) ** 2) / dof)
+        
+        Sxx = np.sum((x - mean_x)**2)
+        
+        conf_interval = t_value * s_err * np.sqrt(
+            1/n + (x - mean_x)**2 / Sxx
+        )
+        
         return conf_interval

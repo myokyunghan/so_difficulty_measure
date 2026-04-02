@@ -39,7 +39,7 @@ def save_json(to_save, path):
         json.dump(to_save, file, ensure_ascii=False, indent=4)
 
 
-def save_src_as_file(to_save, path):
+def save_src_as_file(to_save, path, lang):
     """
 
     Args:
@@ -51,7 +51,7 @@ def save_src_as_file(to_save, path):
     """
     if CONSTANTS.verbose_loading:
         print(f"[Saving...] {path}")
-    with open(path, 'wb') as file:
+    with open(f'{path}.{CONSTANTS.src_extend[lang]}', 'wb') as file:
         file.write(to_save.encode())
 
 
@@ -107,8 +107,16 @@ def load_df(path, col_list):
 
 
 def save_many_to_one(path, save_file_path, save_file_name):
+    print(f'[src path] {path}')
+    print(f'[target path] {save_file_path}')
     files = [f for f in Path(path).glob("*.csv")]
     with ProcessPoolExecutor() as ex:
         df = pd.concat(ex.map(pd.read_csv, files), ignore_index=True)
     df.to_parquet(f'{save_file_path}/{save_file_name}.parquet')
     print(f'[Saved] All complexity files are saved in {save_file_path}/{save_file_name}.parquet')
+
+
+
+def open_src(filepath: str):
+    with open(filepath, "r", encoding="utf-8") as f:
+        return f.read()

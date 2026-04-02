@@ -17,7 +17,7 @@ class ModelRunner:
         self.runner_opt       = runner_opt
         self.ver              = ver
         self.operation_option = self.runner_opt.user_opt['operation_option']
-        self.save_dir         = f"{self.runner_opt.user_opt['save_dir']}/{self.ver}"
+        self.save_dir         = f"{self.runner_opt.user_opt['save_dir']}"
 
     def __call__(self):
         self.run()
@@ -57,7 +57,7 @@ if __name__ == "__main__":
     
     runner_opt = RunnerOptions(
         'operation',
-        '1',
+        '2222',
         param
     )
 

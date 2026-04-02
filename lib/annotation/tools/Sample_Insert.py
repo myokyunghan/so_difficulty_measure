@@ -38,50 +38,6 @@ class Sample_Insert:
             posttype = "'2'"
 
 
-    # def chk_targ_yn(posttype, st_dt, end_dt, num_p):
-    #     print("sample_insert> chk_targ_yn> ") 
-
-    #     st_day  = datetime(int(st_dt.split('-')[0]), int(st_dt.split('-')[1]), int(st_dt.split('-')[2])) # 비교할 날짜(2020.1.1)
-    #     end_day = datetime(int(end_dt.split('-')[0]), int(end_dt.split('-')[1]), int(end_dt.split('-')[2])) # 비교할 날짜(2020.1.1)
-    #     diff = end_day - st_day
-
-
-    #     if posttype == "1" : 
-    #         print("sample_insert> chk_targ_yn> posttype==1") 
-    #         posttype = "'1'"
-    #         q_sql = """select z.std_date, count(*) as cnt
-    #                     from (
-    #                             select to_char(x.date, 'yyyy-mm-dd') as std_date, y.id
-    #                             from date_master x
-    #                                         left join (select a.id, to_char(b.creationdate, 'yyyy-mm-dd') as date
-    #                                                 from  tt_posts_difficulty a
-    #                                                     , posts b
-    #                                                 where a.id = b.id
-    #                                                 and b.posttypeid = {0}  ) y
-    #                                                 on to_char(x.date, 'yyyy-mm-dd') = y.date
-    #                             where x.date between '{1}' and '{2}'
-    #                         ) z
-    #                     group by z.std_date
-    #             """ 
-    #         conn = psycopg2.connect(host = conf.database_user['host'], dbname=conf.database_user['dbname'], user=conf.database_user['user'], password=conf.database_user['password'])
-    #         try:
-    #             cur = conn.cursor()
-    #             cur.execute(q_sql.format(posttype, st_dt, end_dt))
-    #             rows = cur.fetchall()
-
-    #         except psycopg2.DatabaseError as db_err:
-    #             print(db_err)
-    #         finally : 
-    #             cur.close()
-
-    #         q_output = pd.DataFrame(rows, columns = ['std_date', 'cnt'])
-    #         return ((diff.days - q_output.shape[0]) == 0) & (q_output[q_output['cnt']!=num_p].shape[0]==0)
-    #         # return q_output
-
-    #     else : 
-    #         print("sample_insert> get_id_list> posttype==2") 
-    #         posttype = "'2'"
-
 
     def insert_sample(self):
         print("sample_insert") 
