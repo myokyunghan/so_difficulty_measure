@@ -12,22 +12,27 @@ Build tree-sitter-r:
 
 Set R_TREESITTER_LIB env var to the .so path, or default /tmp/tree_sitter_r.so
 """
-
-import ctypes, os, json, sys
+import os
 from tree_sitter import Language, Parser
 
-def _load_r_language():
-    lib_path = os.environ.get("R_TREESITTER_LIB", "/tmp/tree_sitter_r.so")
-    if not os.path.exists(lib_path):
-        raise FileNotFoundError(f"tree-sitter-r not found at {lib_path}")
-    lib = ctypes.cdll.LoadLibrary(lib_path)
-    lib.tree_sitter_r.restype = ctypes.c_void_p
-    return Language(lib.tree_sitter_r())
-
-R_LANGUAGE = _load_r_language()
-
 def create_parser():
-    return Parser(R_LANGUAGE)
+    """tree-sitter-language-pack 우선, 개별 패키지 fallback"""
+    # 1. tree-sitter-language-pack
+    try:
+        from tree_sitter_language_pack import get_parser
+        return get_parser("r")
+    except Exception:
+        pass
+    # 2. 개별 패키지
+    try:
+        import tree_sitter_r as _mod
+        return Parser(Language(_mod.language()))
+    except ImportError:
+        raise ImportError(
+            "Install one of:\n"
+            "  pip install tree-sitter-language-pack\n"
+            "  pip install tree-sitter-r")
+
 
 class CognitiveComplexityCalculator:
     def __init__(self, source_code):

@@ -346,6 +346,287 @@ class PlotGen:
         # 가로 그리드 (옅게)
         ax.yaxis.grid(True, linestyle=':', linewidth=0.5, color='gray', alpha=0.5, zorder=0)
         ax.set_axisbelow(True)
+
+    def draw_regression(self, ax, title, series, panel_label=''):
+        x_rel, divider = get_dist_x_div(series)
+
+        reg_bf = calc_regression_with_ci(x_rel[:divider], series[:divider])
+        reg_af = calc_regression_with_ci(x_rel[divider:], series[divider:])
+
+        bf = reg_bf["pred_summary"]
+        af = reg_af["pred_summary"]
+
+        ax.scatter(x_rel, series, color='darkgray', alpha=0.7, s=10, marker='x')
+
+        ax.plot(x_rel[:divider], bf["mean"], linewidth=1.5, label='Before ChatGPT')
+        ax.plot(x_rel[divider:], af["mean"], linewidth=1.5, label='After ChatGPT')
+
+        ax.fill_between(x_rel[:divider], bf["mean_ci_lower"], bf["mean_ci_upper"], alpha=0.15)
+        ax.fill_between(x_rel[divider:], af["mean_ci_lower"], af["mean_ci_upper"], alpha=0.15)
+
+        ax.axvline(x=0, color='#CC3333', linestyle='--', linewidth=1.2, zorder=5)
+
+        # Chow test
+        st_0 = st.Stats(np.arange(-52, 52), series, 2, 0.95)
+        F_stat, p_value = st_0.chow_test()
+        p_txt = '$p < 0.001$' if p_value < 0.001 else f'$p = {p_value:.3f}$'
+
+        # 제목 — 폰트 크기 통일
+        # ax.set_title(f'Changes in {title} (topic)', fontsize=font_setting['title'], pad=22)
+        ax.text(0.5, 1.08, f'Changes in {title} (topic)',
+            transform=ax.transAxes,
+            fontsize=font_setting['title'], ha='center', va='bottom')
+
+        # p-value — 제목 아래 별도 텍스트 (유의 여부에 따라 색상 구분)
+        p_color = '#CC3333' if p_value < 0.05 else 'gray'
+        ax.text(0.5, 1.02, p_txt,
+                ha='center', fontsize=font_setting['p-value'], color=p_color,
+                transform=ax.transAxes)
+                    
+        # 패널 레이블
+        if panel_label:
+            ax.text(-0.08, 1.08, panel_label,
+                    transform=ax.transAxes,
+                    fontsize=font_setting['panel'], fontweight='bold',
+                    va='bottom', ha='left')
+
+        # X축 레이블
+        # ax.set_xlabel('Week relative to ChatGPT release', fontsize=9)
+
+        # 축 폰트
+        ax.tick_params(axis='both', labelsize=font_setting['tick'])
+
+        # spine 정리
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        # 그리드
+        ax.yaxis.grid(True, linestyle=':', linewidth=0.5, color='gray', alpha=0.5, zorder=0)
+        ax.set_axisbelow(True)
+
+        # 범례 (첫 번째 regression 패널에만 표시하고 싶으면 조건 추가)
+        ax.legend(fontsize=font_setting['legend'], frameon=False)
+
+        
+    def draw_topic_stack(self, ax, title, proportion, order_list, c, alpha=0.9, panel_label = ''):
+        
+        x = sorted(list(proportion['rel_week'].unique()))
+        bottom = np.zeros(len(x))
+        
+        for idx, topic in enumerate(order_list):
+            t_p = proportion[proportion['Topic'] == topic].copy()
+
+            count_full = np.zeros(len(x))
+            for i, rw in enumerate(t_p['rel_week']):
+                if rw in x:
+                    rw_idx = x.index(rw)
+                    count_full[rw_idx] = t_p.loc[t_p['rel_week'] == rw, 'proportion'].values[0]
+            ax.bar(
+                x,
+                count_full,
+                bottom=bottom,
+                label=topic,
+                color=c[idx],
+                width=1.0,
+                align='center',
+                alpha=alpha,
+                linewidth=0,         
+            )
+            
+            bottom += count_full
+
+        # draw chatgpt line
+        self.draw_chatgpt_line(ax)
+        
+        
+        # set panel label
+        self.set_panel_label(ax, panel_label)
+        
+        # set title
+        self.set_title(ax, title)
+
+        # set tick size
+        self.set_tick_size(ax)
+        
+        # set_spine_visible 
+        self.set_spine_visible(ax, False)
+
+        # set_grid_visible
+        self.set_grid_visible(ax, True)
+
+        # Y축 범위
+        ax.set_ylim(0, bottom.max() * 1.05)
+
+    
+    def draw_chatgpt_line(self, ax, linestype = '--', linewidth = 1.2, zorder=5):
+        ax.axvline(x=0, color='tab:red', linestyle=linestype, linewidth=linewidth, zorder = zorder)
+    
+    def set_ylim_range(self, ax, x, y, gap = 0.001, bin = 0.025):
+        y_min = min(y)
+        y_max = max(y)
+
+        bot = np.floor((y_min - gap) * 100) / 100
+        top = np.ceil((y_max + gap) * 100) / 100
+
+        bot = max(0, bot)
+        top = min(1, top)
+
+        ax.set_ylim(bot-gap, top+gap)
+
+        bot_tick = np.floor(bot * 10) / 10
+        top_tick = np.ceil(top * 10) / 10
+        bin = ((top_tick-bot_tick)/4*100)/100
+        ax.set_yticks(np.arange(bot_tick, top_tick+0.000000001, bin))
+
+    
+    def set_panel_label(self, ax, panel_label):
+        ax.text(-0.08, 1.08, panel_label,
+                transform=ax.transAxes,
+                fontsize=font_setting['panel'], fontweight='bold',
+                va='bottom', ha='left')
+    
+    def set_title(self, ax, title):
+        ax.text(0.5, 1.08, f'{title}',
+            transform=ax.transAxes,
+            fontsize=font_setting['title'], ha='center', va='bottom')
+        
+    def set_tick_size(self, ax):
+        ax.tick_params(axis='both', labelsize=font_setting['tick'])
+
+    def set_spine_visible(self, ax, is_visible=True):
+        ax.spines['top'].set_visible(is_visible)
+        ax.spines['right'].set_visible(is_visible)
+
+    
+    def set_grid_visible(self, ax, is_visible=True):
+        ax.yaxis.grid(is_visible, linestyle=':', linewidth=0.5, color='gray', alpha=0.5, zorder=0)
+        ax.set_axisbelow(is_visible)
+
+    def set_legend(self, ax, is_visible=True):
+        if is_visible:
+            ax.legend(fontsize=font_setting['legend'], frameon=False)
+
+    def draw_tag_bar(self, ax, title, x, y, c, alpha=0.9, panel_label = '', set_ylim = True):
+        
+        # draw bar plot
+        ax.bar(x, y, width=1.0, align='center', alpha=alpha, linewidth=0, color = c)
+        
+        # draw chatgpt line
+        self.draw_chatgpt_line(ax)
+        
+        # set ylim
+        if set_ylim : 
+            self.set_ylim_range(ax, x, y)
+        
+        # set panel label
+        self.set_panel_label(ax, panel_label)
+        
+        # set title
+        self.set_title(ax, title)
+
+        # set tick size
+        self.set_tick_size(ax)
+        
+        # set_spine_visible 
+        self.set_spine_visible(ax, False)
+
+        # set_grid_visible
+        self.set_grid_visible(ax, True)
+        
+
+    def draw_statter_plot(self, ax, x, y, alpha = 0.7, s = 10, marker='x'):
+        ax.scatter(x, y, color='darkgray', alpha=alpha, s=s, marker=marker)
+        
+
+    def draw_regression_line(self, ax, x, y, apply_chowtest=True):
+        # divider = np.where(np.array(x) == 0)[0][0]
+        x_arr = np.array(x)
+        if 0 in x_arr:
+            divider = np.where(x_arr == 0)[0][0]
+        else:
+            divider = np.argmin(np.abs(x_arr))
+        
+        reg_bf = calc_regression_with_ci(x[:divider], y[:divider])
+        reg_af = calc_regression_with_ci(x[divider:], y[divider:])
+        
+        bf = reg_bf["pred_summary"]
+        af = reg_af["pred_summary"]
+
+        ax.plot(x[:divider], bf["mean"], linewidth=2, label='before ChatGPT')
+        ax.plot(x[divider:], af["mean"], linewidth=2, label='after ChatGPT')
+
+        ax.fill_between(x[:divider], bf["mean_ci_lower"], bf["mean_ci_upper"], alpha=0.1)
+        ax.fill_between(x[divider:], af["mean_ci_lower"], af["mean_ci_upper"], alpha=0.1)
+
+
+        if apply_chowtest:
+            # Chow test
+            st_0 = st.Stats(x, y, 2, 0.95, divider)
+            F_stat, p_value = st_0.chow_test()
+            ax.plot(x, st_0.y_predict, linestyle="--", color="black", linewidth=1.5, label='Overall fit')
+
+            p_txt = '$p < 0.001$' if p_value < 0.001 else f'$p = {p_value:.3f}$'            
+            p_color = '#CC3333' if p_value < 0.05 else 'gray'
+            ax.text(0.5, 1.02, p_txt,
+                    ha='center', fontsize=font_setting['p-value'], color=p_color,
+                    transform=ax.transAxes)
+            
+        
+        self.set_legend(ax)
+        
+  
+    def draw_regression_with_chow(self, ax, title, x, y, c, alpha=0.9, panel_label = '', set_ylim = True):
+        self.draw_statter_plot(ax, x, y)
+
+        self.draw_regression_line(ax, x, y)
+    
+        # draw chatgpt line
+        self.draw_chatgpt_line(ax)
+        
+        # set ylim
+        if set_ylim:
+            self.set_ylim_range(ax, x, y)
+        
+        # set panel label
+        self.set_panel_label(ax, panel_label)
+        
+        # set title
+        self.set_title(ax, title)
+
+        # set tick size
+        self.set_tick_size(ax)
+        
+        # set_spine_visible 
+        self.set_spine_visible(ax, False)
+
+        # set_grid_visible
+        self.set_grid_visible(ax, True)
+
+    def draw_topic_regression(self, ax, title, x, y, c, alpha=0.9, panel_label = ''):
+        self.draw_statter_plot(ax, x, y)
+
+        self.draw_regression_line(ax, x, y)
+    
+        # draw chatgpt line
+        self.draw_chatgpt_line(ax)
+        
+        # set ylim
+        self.set_ylim_range(ax, x, y)
+        
+        # set panel label
+        self.set_panel_label(ax, panel_label)
+        
+        # set title
+        self.set_title(ax, title)
+
+        # set tick size
+        self.set_tick_size(ax)
+        
+        # set_spine_visible 
+        self.set_spine_visible(ax, False)
+
+        # set_grid_visible
+        self.set_grid_visible(ax, True)
     
 
 if __name__ == "__main__":

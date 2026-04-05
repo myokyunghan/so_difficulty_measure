@@ -19,20 +19,28 @@ Rust 소스코드의 함수별 인지 복잡도를 계산합니다.
 
 의존성: pip install tree-sitter tree-sitter-rust
 """
-
-import tree_sitter_rust as ts_rust
-from tree_sitter import Language, Parser
 import os
-import json
 import sys
-
-
-RUST_LANGUAGE = Language(ts_rust.language())
-
+import json
+from tree_sitter import Language, Parser
 
 def create_parser():
-    parser = Parser(RUST_LANGUAGE)
-    return parser
+    """tree-sitter-language-pack 우선, 개별 패키지 fallback"""
+    # 1. tree-sitter-language-pack
+    try:
+        from tree_sitter_language_pack import get_parser
+        return get_parser("rust")
+    except Exception:
+        pass
+    # 2. 개별 패키지
+    try:
+        import tree_sitter_rust as _mod
+        return Parser(Language(_mod.language()))
+    except ImportError:
+        raise ImportError(
+            "Install one of:\n"
+            "  pip install tree-sitter-language-pack\n"
+            "  pip install tree-sitter-rust")
 
 
 class CognitiveComplexityCalculator:

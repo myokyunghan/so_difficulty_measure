@@ -34,20 +34,28 @@ Rules (Section 2 of the paper):
 
 Dependencies: pip install tree-sitter tree-sitter-javascript
 """
-
-import tree_sitter_javascript as ts_js
-from tree_sitter import Language, Parser
 import os
-import json
 import sys
-
-
-JS_LANGUAGE = Language(ts_js.language())
-
+import json
+from tree_sitter import Language, Parser
 
 def create_parser():
-    parser = Parser(JS_LANGUAGE)
-    return parser
+    """tree-sitter-language-pack 우선, 개별 패키지 fallback"""
+    # 1. tree-sitter-language-pack
+    try:
+        from tree_sitter_language_pack import get_parser
+        return get_parser("javascript")
+    except Exception:
+        pass
+    # 2. 개별 패키지
+    try:
+        import tree_sitter_javascript as _mod
+        return Parser(Language(_mod.language()))
+    except ImportError:
+        raise ImportError(
+            "Install one of:\n"
+            "  pip install tree-sitter-language-pack\n"
+            "  pip install tree-sitter-javascript")
 
 
 class CognitiveComplexityCalculator:

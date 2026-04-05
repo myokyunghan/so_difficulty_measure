@@ -1,6 +1,6 @@
 """
-C# Cognitive Complexity Calculator
-====================================
+PHP Cognitive Complexity Calculator
+=====================================
 Based on: G. Ann Campbell. 2018. "Cognitive Complexity: An Overview and
 Evaluation." In TechDebt '18, ICSE, Gothenburg, Sweden.
 https://doi.org/10.1145/3194164.3194186
@@ -9,7 +9,7 @@ Rules (Section 2 of the paper):
 
   2.1 Ignore readable shorthand structures
       - No increment for the method/class itself
-      - No increment for null-coalescing (?., ??)
+      - No increment for null-coalescing operators
 
   2.2 Structural increment (+1):
       - if, else if, else                          (§2.2)
@@ -17,22 +17,23 @@ Rules (Section 2 of the paper):
       - for, foreach, while, do...while            (§2.2)
       - catch                                      (§2.2)
       - ternary (? :)                              (§2.2)
-      - goto                                       (§2.2)
-      - sequences of like binary logical operators  (§2.2)
+      - break LABEL, continue LABEL                (§2.2, "goto LABEL")
+      - sequences of like binary logical operators (§2.2)
+      - each method in a recursion cycle           (§2.2, not implemented)
 
   2.3 Nesting:
     2.3.1 Increment nesting level:
       - if, else if, else, switch, ternary         (§2.3.1)
       - for, foreach, while, do...while            (§2.3.1)
       - catch                                      (§2.3.1)
-      - nested methods: lambda                     (§2.3.1)
+      - nested methods: lambda, anonymous class    (§2.3.1)
 
     2.3.2 Receive nesting increment (+nesting_level):
       - if, switch, ternary                        (§2.3.2, NOT else if/else)
       - for, foreach, while, do...while            (§2.3.2)
       - catch                                      (§2.3.2)
 
-Dependencies: pip install tree-sitter tree-sitter-c-sharp
+Dependencies: pip install tree-sitter tree-sitter-php
 """
 import os
 import sys
@@ -40,12 +41,22 @@ import json
 from tree_sitter import Language, Parser
 
 def create_parser():
-    """개별 패키지로 파서 생성"""
+    """tree-sitter-language-pack 우선, 개별 패키지 fallback"""
+    # 1. tree-sitter-language-pack
     try:
-        import tree_sitter_c_sharp as _mod
-        return Parser(Language(_mod.language()))
+        from tree_sitter_language_pack import get_parser
+        return get_parser("php")
+    except Exception:
+        pass
+    # 2. 개별 패키지
+    try:
+        import tree_sitter_php as _mod
+        return Parser(Language(_mod.language_php()))
     except ImportError:
-        raise ImportError("Install: pip install tree-sitter-c-sharp")
+        raise ImportError(
+            "Install one of:\n"
+            "  pip install tree-sitter-language-pack\n"
+            "  pip install tree-sitter-php")
 
 
 class CognitiveComplexityCalculator:
@@ -86,40 +97,30 @@ class CognitiveComplexityCalculator:
         return self.results
 
     def _walk_top_level(self, node):
-        """최상위에서 클래스/구조체/인터페이스를 찾음."""
+        """최상위에서 함수/클래스를 찾음."""
         for child in node.children:
-            if child.type in ("class_declaration", "struct_declaration",
-                              "interface_declaration", "enum_declaration",
-                              "record_declaration"):
+            if child.type == "function_definition":
+                self._process_method(child)
+            elif child.type in ("class_declaration", "interface_declaration",
+                              "enum_declaration", "record_declaration", "trait_declaration"):
                 self._walk_class(child)
-            elif child.type == "namespace_declaration":
-                body = child.child_by_field_name("body")
-                if body:
-                    self._walk_top_level(body)
-            elif child.type == "file_scoped_namespace_declaration":
+            elif child.type == "program":
                 self._walk_top_level(child)
+            elif child.type == "function_definition":
+                self._process_method(child)
+            # import, package, comment 등은 무시
+            # ERROR 노드도 무시하여 무한 재귀 방지
 
     def _walk_class(self, class_node):
         body = class_node.child_by_field_name("body")
         if body is None:
             return
         for child in body.children:
-            if child.type in ("method_declaration", "constructor_declaration"):
+            if child.type in ("method_declaration", "constructor_declaration", "function_definition"):
                 self._process_method(child)
-            elif child.type in ("class_declaration", "struct_declaration",
-                                "interface_declaration", "enum_declaration",
-                                "record_declaration"):
+            elif child.type in ("class_declaration", "interface_declaration",
+                                "enum_declaration", "record_declaration"):
                 self._walk_class(child)
-            elif child.type == "property_declaration":
-                # property accessors (get/set with bodies)
-                for sub in child.children:
-                    if sub.type == "accessor_list":
-                        for acc in sub.children:
-                            if acc.type == "accessor_declaration":
-                                acc_body = acc.child_by_field_name("body")
-                                if acc_body and acc_body.child_count > 2:
-                                    # Non-trivial accessor
-                                    pass  # Skip property accessors for now
 
     def _process_method(self, method_node):
         """§2.1: 메서드 자체에는 increment 없음"""
@@ -157,31 +158,25 @@ class CognitiveComplexityCalculator:
 
         # §2.2: switch → +1 structural
         # §2.3.2: switch → receives nesting increment
-        if t == "switch_statement":
+        if t in ("switch_expression", "switch_statement"):
             inc = 1 + nesting
             self._add_detail(node, "switch", 1, nesting)
             c = inc
             body = node.child_by_field_name("body")
             if body:
+                # case 자체는 increment 없음, 내부 statements만 처리
                 for child in body.children:
-                    if child.type == "switch_section":
-                        c += self._visit_switch_section(child, nesting + 1)
+                    if child.type == "switch_block_statement_group":
+                        c += self._visit_switch_group(child, nesting + 1)
+                    elif child.type in ("switch_rule",):
+                        c += self._visit_children(child, nesting + 1)
             return c
 
         # §2.2: for → +1 structural
-        if t == "for_statement":
+        # §2.3.2: for → receives nesting increment
+        if t in ("for_statement", "enhanced_for_statement", "foreach_statement"):
             inc = 1 + nesting
             self._add_detail(node, "for", 1, nesting)
-            c = inc
-            body = node.child_by_field_name("body")
-            if body:
-                c += self._visit_children(body, nesting + 1)
-            return c
-
-        # §2.2: foreach → +1 structural
-        if t == "foreach_statement":
-            inc = 1 + nesting
-            self._add_detail(node, "foreach", 1, nesting)
             c = inc
             body = node.child_by_field_name("body")
             if body:
@@ -230,7 +225,7 @@ class CognitiveComplexityCalculator:
                 c += self._visit_children(body, nesting + 1)
             return c
 
-        # finally: no increment
+        # finally: no increment (not a branch)
         if t == "finally_clause":
             c = 0
             body = node.child_by_field_name("body")
@@ -240,7 +235,7 @@ class CognitiveComplexityCalculator:
 
         # §2.2: ternary → +1 structural
         # §2.3.2: ternary → receives nesting increment
-        if t == "conditional_expression":
+        if t == "ternary_expression":
             inc = 1 + nesting
             self._add_detail(node, "ternary", 1, nesting)
             c = inc
@@ -255,10 +250,14 @@ class CognitiveComplexityCalculator:
                 c += self._visit(alt, nesting + 1)
             return c
 
-        # §2.2: goto → +1 structural
-        if t == "goto_statement":
-            self._add_detail(node, "goto", 1, 0)
-            return 1
+        # §2.2: break LABEL, continue LABEL → +1 structural
+        if t in ("break_statement", "continue_statement"):
+            has_label = any(ch.type == "identifier" for ch in node.children)
+            if has_label:
+                keyword = "break" if t == "break_statement" else "continue"
+                self._add_detail(node, f"{keyword} with label", 1, 0)
+                return 1
+            return 0
 
         # labeled_statement: label 자체는 increment 없음
         if t == "labeled_statement":
@@ -272,33 +271,42 @@ class CognitiveComplexityCalculator:
         if t == "binary_expression":
             return self._handle_binary(node, nesting)
 
+        # parenthesized_expression
+        if t == "parenthesized_expression":
+            return self._visit_children(node, nesting)
+
         # §2.3.1: lambda → increment nesting level
-        if t == "lambda_expression":
+        if t in ("lambda_expression", "anonymous_function", "arrow_function"):
             c = 0
             body = node.child_by_field_name("body")
             if body:
-                if body.type == "block":
-                    c += self._visit_children(body, nesting + 1)
-                else:
-                    c += self._visit(body, nesting + 1)
+                c += self._visit(body, nesting + 1)
             return c
 
-        # §2.1: null-coalescing (??, ?.) → no increment
-        if t in ("conditional_access_expression", "coalesce_expression"):
-            return self._visit_children(node, nesting)
+        # §2.3.1: anonymous class → increment nesting level
+        if t == "object_creation_expression":
+            c = 0
+            for child in node.children:
+                if child.type == "class_body":
+                    for item in child.children:
+                        if item.type in ("method_declaration", "constructor_declaration"):
+                            body = item.child_by_field_name("body")
+                            if body:
+                                c += self._visit_children(body, nesting + 1)
+                        else:
+                            c += self._visit(item, nesting)
+                else:
+                    c += self._visit(child, nesting)
+            return c
 
         # 기타: 자식 재귀
         return self._visit_children(node, nesting)
 
-    def _visit_switch_section(self, section_node, nesting):
-        """switch_section 내부 처리 (case/default 라벨 제외)"""
+    def _visit_switch_group(self, group_node, nesting):
+        """switch_block_statement_group 내부 처리 (switch_label 제외)"""
         c = 0
-        past_colon = False
-        for child in section_node.children:
-            if child.type == ":":
-                past_colon = True
-                continue
-            if past_colon:
+        for child in group_node.children:
+            if child.type != "switch_label":
                 c += self._visit(child, nesting)
         return c
 
@@ -308,10 +316,13 @@ class CognitiveComplexityCalculator:
         c = 0
 
         if is_first:
+            # §2.2: if → +1 structural
+            # §2.3.2: if → +nesting penalty
             inc = 1 + nesting
             self._add_detail(if_node, "if", 1, nesting)
             c += inc
         else:
+            # §2.2: else if → +1 structural, NO nesting penalty (§2.3.2)
             c += 1
             self._add_detail(if_node, "else if", 1, 0)
 
@@ -320,8 +331,8 @@ class CognitiveComplexityCalculator:
         if cond:
             c += self._visit(cond, nesting)
 
-        # §2.3.1: increases nesting level for consequence
-        consequence = if_node.child_by_field_name("consequence")
+        # §2.3.1: if/else if → increases nesting level for consequence
+        consequence = if_node.child_by_field_name("consequence") or if_node.child_by_field_name("body")
         if consequence:
             c += self._visit_children(consequence, nesting + 1)
 
@@ -330,7 +341,16 @@ class CognitiveComplexityCalculator:
         if alt:
             if alt.type == "if_statement":
                 c += self._handle_if_chain(alt, nesting, is_first=False)
-            elif alt.type == "block":
+            elif alt.type == "else_clause":
+                # PHP: else_clause contains either if_statement or compound_statement
+                for ch in alt.children:
+                    if ch.type == "if_statement":
+                        c += self._handle_if_chain(ch, nesting, is_first=False)
+                    elif ch.type in ("compound_statement", "block"):
+                        c += 1
+                        self._add_detail(alt, "else", 1, 0)
+                        c += self._visit_children(ch, nesting + 1)
+            elif alt.type in ("block", "compound_statement"):
                 c += 1
                 self._add_detail(alt, "else", 1, 0)
                 c += self._visit_children(alt, nesting + 1)
@@ -344,6 +364,11 @@ class CognitiveComplexityCalculator:
     # ── Boolean operator sequences (§2.2) ──
 
     def _handle_binary(self, node, nesting):
+        """
+        §2.2: "sequences of like binary logical operators"
+        Same operator in sequence → +1
+        Switch to different operator → +1 additional
+        """
         ops = []
         self._collect_logical_ops(node, ops)
 
@@ -361,6 +386,7 @@ class CognitiveComplexityCalculator:
         return c
 
     def _collect_logical_ops(self, node, ops):
+        """binary_expression 트리에서 &&, || 연산자를 좌→우 순서로 수집"""
         if node.type != "binary_expression":
             return
         op_node = node.child_by_field_name("operator")
@@ -404,7 +430,7 @@ def calculate_directory(dirpath: str):
     all_results = []
     for root, dirs, files in os.walk(dirpath):
         for fname in sorted(files):
-            if fname.endswith(".cs"):
+            if fname.endswith(".php"):
                 fpath = os.path.join(root, fname)
                 try:
                     results = calculate_file(fpath)
@@ -441,29 +467,26 @@ def print_results(results, verbose=True):
 if __name__ == "__main__":
 
     test_code = '''
-using System;
-
 class Example {
 
-    string GetName() {
+    String getName() {
         return this.name;
     }
 
-    int SumOfPrimes(int max) {
+    int sumOfPrimes(int max) {
         int total = 0;
-        for (int i = 1; i <= max; ++i) {
+        OUT: for (int i = 1; i <= max; ++i) {
             for (int j = 2; j < i; ++j) {
                 if (i % j == 0) {
-                    goto next;
+                    continue OUT;
                 }
             }
             total += i;
-            next:;
         }
         return total;
     }
 
-    string GetWords(int number) {
+    String getWords(int number) {
         switch (number) {
             case 1: return "one";
             case 2: return "a couple";
@@ -471,7 +494,7 @@ class Example {
         }
     }
 
-    int ComplexExample(bool a, bool b, int c) {
+    int complexExample(boolean a, boolean b, int c) {
         if (a && b) {
             for (int i = 0; i < c; i++) {
                 if (i > 10) {
@@ -479,7 +502,7 @@ class Example {
                 } else if (i > 5) {
                     continue;
                 } else {
-                    Console.WriteLine(i);
+                    System.out.println(i);
                 }
             }
         } else if (c > 0) {
@@ -491,7 +514,7 @@ class Example {
         return 0;
     }
 
-    bool BooleanLogic(bool a, bool b, bool c, bool d) {
+    boolean booleanLogic(boolean a, boolean b, boolean c, boolean d) {
         if (a && b && c) {
             return true;
         } else if (a || b || c) {
@@ -503,45 +526,42 @@ class Example {
         }
     }
 
-    void TryCatchFinally() {
+    String tryCatchFinally(String path) {
         try {
-            if (true) {}
+            if (path == null) {
+                return "";
+            }
         } catch (Exception e) {
-            if (e is InvalidOperationException) {
-                throw;
+            if (e instanceof RuntimeException) {
+                throw e;
             }
         } finally {
-            Console.WriteLine("done");
+            System.out.println("done");
         }
+        return path;
     }
 
-    void LambdaExample() {
-        Action fn = () => {
+    void lambdaExample() {
+        Runnable r = () -> {
             if (true) {
-                Console.WriteLine("hi");
+                System.out.println("hello");
             }
         };
     }
 
-    int TernaryExample(bool flag) {
+    int ternaryExample(boolean flag) {
         return flag ? 1 : 0;
     }
 
-    void DoWhileExample(int x) {
-        do { x--; } while (x > 0);
-    }
-
-    void ForEachExample(int[] arr) {
-        foreach (var item in arr) {
-            if (item > 0) {
-                Console.WriteLine(item);
-            }
-        }
+    void doWhileExample(int x) {
+        do {
+            x--;
+        } while (x > 0);
     }
 }
 '''
 
-    print("C# Cognitive Complexity Calculator")
+    print("PHP Cognitive Complexity Calculator")
     print("Based on Campbell 2018 (ICSE TechDebt '18)")
     print("https://doi.org/10.1145/3194164.3194186")
     print("=" * 60)
@@ -549,9 +569,9 @@ class Example {
     results = calculate_source(test_code)
     print_results(results, verbose=True)
 
-    # Non-code test
+    # Non-code test (recursion safety)
     print("\n\n--- Non-code test ---")
-    log = 'System.NullReferenceException: Object reference not set to an instance of an object'
+    log = 'WARN Exception encountered org.springframework.context.ApplicationContextException: Unable to start'
     r2 = calculate_source(log)
     print(f"Log text: functions={len(r2)}, complexity={sum(x['complexity'] for x in r2)}")
 
