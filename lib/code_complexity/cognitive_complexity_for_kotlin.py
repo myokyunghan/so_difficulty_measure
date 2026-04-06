@@ -27,8 +27,12 @@ def create_parser():
 
 class CognitiveComplexityCalculator:
     def __init__(self, src):
-        self.src=src; self.p = create_parser(); self.tree=self.p.parse(bytes(src,"utf-8"))
-        self.results=[]; self.details=[]
+        self.src=src; self.results=[]; self.details=[]
+        try:
+            self.p = create_parser()
+            self.tree = self.p.parse(bytes(src, "utf-8"))
+        except Exception:
+            self.tree = None
     def _t(self,n): return "" if n is None else self.src[n.start_byte:n.end_byte]
     def _l(self,n): return n.start_point[0]+1
     def _a(self,n,k,s,ne):
@@ -37,8 +41,34 @@ class CognitiveComplexityCalculator:
     def _ar(self,d,i): self.details.append(f"          +{i} ({d})")
 
     def calculate(self):
-        self.results=[]
+        if self.tree is None:
+            return []
+        if not self.src.strip():
+            return []
+        self.results = []
         self._walk(self.tree.root_node)
+
+        # 함수를 못 찾은 경우: bare code를 가상 함수로 감싸서 재파싱
+        if not self.results:
+            wrapped = "fun __top__() {\n" + self.src + "\n}"
+            try:
+                tree2 = self.p.parse(bytes(wrapped, "utf-8"))
+                if not tree2.root_node.has_error:
+                    original_src = self.src
+                    original_tree = self.tree
+                    self.src = wrapped
+                    self.tree = tree2
+                    self.results = []
+                    self._walk(tree2.root_node)
+                    self.src = original_src
+                    self.tree = original_tree
+                    for r in self.results:
+                        r["function"] = "<top-level>"
+                        r["start_line"] = max(1, r["start_line"] - 1)
+                        r["end_line"] = max(1, r["end_line"] - 1)
+            except Exception:
+                pass
+
         return self.results
     def _walk(self,node):
         for ch in node.children:
@@ -56,12 +86,16 @@ class CognitiveComplexityCalculator:
     def _proc(self,fn):
         nn=fn.child_by_field_name("name"); name=self._t(nn) if nn else "<anon>"
         self.details=[]
-        # Kotlin: function_body -> block
+        # Kotlin: function_body -> block or function_body -> statements (버전에 따라 다름)
         body=None
         for ch in fn.children:
             if ch.type=="function_body":
                 for sub in ch.children:
-                    if sub.type=="block": body=sub; break
+                    if sub.type in ("block", "statements"):
+                        body=sub; break
+                # block/statements 못 찾으면 function_body 자체를 body로 사용
+                if body is None:
+                    body = ch
                 break
         c=self._vc(body,0) if body else 0
         self.results.append({"function":name,"complexity":c,"start_line":fn.start_point[0]+1,"end_line":fn.end_point[0]+1,"details":list(self.details)})

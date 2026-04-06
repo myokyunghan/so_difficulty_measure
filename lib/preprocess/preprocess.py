@@ -1,5 +1,5 @@
 import re
-
+import html
 
 class HTMLParser:
     def __init__(self):
@@ -23,20 +23,23 @@ class HTMLParser:
         """
         to_return = re.sub(self.tag_pattern, '', post_str)
         return to_return
-
+    
     def replace_entities(self, post_str):
-        """
+        return html.unescape(post_str)
 
-        Args:
-            post_str: a str
+    # def replace_entities(self, post_str):
+    #     """
 
-        Returns:
-            a str with all listed entities replaced
-        """
-        to_return = post_str
-        for key, val in self.html_entities.items():
-            to_return = to_return.replace(key, val)
-        return to_return
+    #     Args:
+    #         post_str: a str
+
+    #     Returns:
+    #         a str with all listed entities replaced
+    #     """
+    #     to_return = post_str
+    #     for key, val in self.html_entities.items():
+    #         to_return = to_return.replace(key, val)
+    #     return to_return
 
     def clean_html_str(self, post_str):
         """
@@ -84,19 +87,23 @@ class CodeSectionParser:
         to_return["code_sections"] = code_section_dict_list
         return to_return
     
+    # def replace_entities(self, post_str):
+    #     """
+
+    #     Args:
+    #         post_str: a str
+
+    #     Returns:
+    #         a str with all listed entities replaced
+    #     """
+    #     to_return = post_str
+    #     for key, val in self.html_entities.items():
+    #         to_return = to_return.replace(key, val)
+    #     return to_return
+    
+
     def replace_entities(self, post_str):
-        """
-
-        Args:
-            post_str: a str
-
-        Returns:
-            a str with all listed entities replaced
-        """
-        to_return = post_str
-        for key, val in self.html_entities.items():
-            to_return = to_return.replace(key, val)
-        return to_return
+        return html.unescape(post_str)
 
     def collect_code_sections(self, post_str):
         """

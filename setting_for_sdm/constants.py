@@ -5,28 +5,36 @@ class CONSTANTS:
 
 
     src_extend = {
-    
-
-    'c'           : 'c',
-    'c++'         : 'cpp',
-    'c#'          : 'cs',
-    'fortran'     : 'f90',
-    'java'        : 'java',
-    'javascript'  : 'js',
-    'python'      : 'py',
-    'r'         : 'r',
-    'rust'        : 'rs',
-    
-    'typescript'  : 'ts',
-    'go'          : 'go',
-    'kotlin'      : 'kt',
-    'swift'       : 'swift',
-    'php'         : 'php',
-    'ruby'        : 'rb',
-    'scala'       : 'scala',
-    'dart'        : 'dart',
-    'objective-c' : 'm',
-    'shell'       : 'sh'
+        'python'      : 'py',
+        'javascript'  : 'js',
+        'java'        : 'java',
+        'c#'          : 'cs',
+        'c++'         : 'cpp',
+        'c'           : 'c',
+        'r'           : 'r',
+        'php'         : 'php',
+        'swift'       : 'swift',
+        'kotlin'      : 'kt',
+        'dart'        : 'dart',
+        'typescript'  : 'ts',
+        'go'          : 'go',
+        'ruby'        : 'rb',
+        'rust'        : 'rs',
+        'scala'       : 'scala',
+        'julia'       : 'jl',       
+        'matlab'      : 'm',        
+        'groovy'      : 'groovy',   
+        'objective-c' : 'm',
+        'vb.net'      : 'vb',       
+        'assembly'    : 'asm',      
+        'haskell'     : 'hs',       
+        'delphi'      : 'pas',      
+        'lua'         : 'lua',      
+        'perl'        : 'pl',       
+        'prolog'      : 'pl',       
+        'fortran'     : 'f90',
+        'f#'          : 'fs',       
+        'solidity'    : 'sol',      
     }
     
     codebert_languages = ["python", "java", "javascript", "php", "ruby", "go"]

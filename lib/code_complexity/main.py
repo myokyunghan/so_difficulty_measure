@@ -74,7 +74,7 @@ class ModelRunner:
             None
         """
 
-        htmlp = HTMLParser()
+
         codep = CodeSectionParser()
         src_list = list_
         

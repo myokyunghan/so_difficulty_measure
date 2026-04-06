@@ -47,8 +47,11 @@ class CognitiveComplexityCalculator:
 
     def __init__(self, source_code: str):
         self.source_code = source_code
-        self.parser = create_parser()
-        self.tree = self.parser.parse(bytes(source_code, "utf-8"))
+        try:
+            self.p = create_parser()
+            self.tree = self.p.parse(bytes(self.source_code, "utf-8"))
+        except Exception:
+            self.tree = None
         self.results = []
         self.details = []
 
@@ -74,6 +77,8 @@ class CognitiveComplexityCalculator:
         self.details.append(f"          +{increment} ({description})")
 
     def calculate(self):
+        if self.tree is None:
+            return []
         self.results = []
         self._walk_top_level(self.tree.root_node)
         return self.results

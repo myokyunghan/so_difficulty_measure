@@ -1,148 +1,189 @@
-"""
-Tree-sitter Parser Loader
-===========================
-tree-sitter-language-pack을 우선 사용하고,
-없으면 개별 언어 패키지로 fallback합니다.
 
-설치 (둘 중 하나만 있으면 됨):
-  pip install tree-sitter-language-pack    # 추천: 248개 언어 한 번에
-  또는
-  pip install tree-sitter-python tree-sitter-java ...  # 개별 설치
+from lib.code_complexity.cognitive_complexity_for_c import (
+    create_parser as create_c_parser,
+    calculate_file as calculate_file_for_c
+)
+from lib.code_complexity.cognitive_complexity_for_cpp import (
+    create_parser as create_cpp_parser,
+    calculate_file as calculate_file_for_cpp
+)
+from lib.code_complexity.cognitive_complexity_for_csharp import (
+    create_parser as create_csharp_parser,
+    calculate_file as calculate_file_for_csharp
+)
+from lib.code_complexity.cognitive_complexity_for_fortran import (
+    create_parser as create_fortran_parser,
+    calculate_file as calculate_file_for_fortran
+)
+from lib.code_complexity.cognitive_complexity_for_java import (
+    create_parser as create_java_parser,
+    calculate_file as calculate_file_for_java
+)
+from lib.code_complexity.cognitive_complexity_for_javascript import (
+    create_parser as create_javascript_parser,
+    calculate_file as calculate_file_for_javascript
+)
+from lib.code_complexity.cognitive_complexity_for_python import (
+    create_parser as create_python_parser,
+    calculate_file as calculate_file_for_python
+)
+from lib.code_complexity.cognitive_complexity_for_r import (
+    create_parser as create_r_parser,
+    calculate_file as calculate_file_for_r
+)
+from lib.code_complexity.cognitive_complexity_for_rust import (
+    create_parser as create_rust_parser,
+    calculate_file as calculate_file_for_rust
+)
 
-사용법:
-  from parser_loader import get_parser
-  parser = get_parser("python")
-  tree = parser.parse(b"def hello(): pass")
-"""
+# ── 추가된 21개 언어 ──
+from lib.code_complexity.cognitive_complexity_for_php import (
+    create_parser as create_php_parser,
+    calculate_file as calculate_file_for_php
+)
+from lib.code_complexity.cognitive_complexity_for_swift import (
+    create_parser as create_swift_parser,
+    calculate_file as calculate_file_for_swift
+)
+from lib.code_complexity.cognitive_complexity_for_kotlin import (
+    create_parser as create_kotlin_parser,
+    calculate_file as calculate_file_for_kotlin
+)
+from lib.code_complexity.cognitive_complexity_for_dart import (
+    create_parser as create_dart_parser,
+    calculate_file as calculate_file_for_dart
+)
+from lib.code_complexity.cognitive_complexity_for_typescript import (
+    create_parser as create_typescript_parser,
+    calculate_file as calculate_file_for_typescript
+)
+from lib.code_complexity.cognitive_complexity_for_go import (
+    create_parser as create_go_parser,
+    calculate_file as calculate_file_for_go
+)
+from lib.code_complexity.cognitive_complexity_for_ruby import (
+    create_parser as create_ruby_parser,
+    calculate_file as calculate_file_for_ruby
+)
+from lib.code_complexity.cognitive_complexity_for_scala import (
+    create_parser as create_scala_parser,
+    calculate_file as calculate_file_for_scala
+)
+from lib.code_complexity.cognitive_complexity_for_julia import (
+    create_parser as create_julia_parser,
+    calculate_file as calculate_file_for_julia
+)
+from lib.code_complexity.cognitive_complexity_for_matlab import (
+    create_parser as create_matlab_parser,
+    calculate_file as calculate_file_for_matlab
+)
+from lib.code_complexity.cognitive_complexity_for_groovy import (
+    create_parser as create_groovy_parser,
+    calculate_file as calculate_file_for_groovy
+)
+from lib.code_complexity.cognitive_complexity_for_objective_c import (
+    create_parser as create_objective_c_parser,
+    calculate_file as calculate_file_for_objective_c
+)
+from lib.code_complexity.cognitive_complexity_for_vbnet import (
+    create_parser as create_vbnet_parser,
+    calculate_file as calculate_file_for_vbnet
+)
+from lib.code_complexity.cognitive_complexity_for_assembly import (
+    create_parser as create_assembly_parser,
+    calculate_file as calculate_file_for_assembly
+)
+from lib.code_complexity.cognitive_complexity_for_haskell import (
+    create_parser as create_haskell_parser,
+    calculate_file as calculate_file_for_haskell
+)
+from lib.code_complexity.cognitive_complexity_for_delphi import (
+    create_parser as create_delphi_parser,
+    calculate_file as calculate_file_for_delphi
+)
+from lib.code_complexity.cognitive_complexity_for_lua import (
+    create_parser as create_lua_parser,
+    calculate_file as calculate_file_for_lua
+)
+from lib.code_complexity.cognitive_complexity_for_perl import (
+    create_parser as create_perl_parser,
+    calculate_file as calculate_file_for_perl
+)
+from lib.code_complexity.cognitive_complexity_for_prolog import (
+    create_parser as create_prolog_parser,
+    calculate_file as calculate_file_for_prolog
+)
+from lib.code_complexity.cognitive_complexity_for_fsharp import (
+    create_parser as create_fsharp_parser,
+    calculate_file as calculate_file_for_fsharp
+)
+from lib.code_complexity.cognitive_complexity_for_solidity import (
+    create_parser as create_solidity_parser,
+    calculate_file as calculate_file_for_solidity
+)
 
-from tree_sitter import Parser
-
-# tree-sitter-language-pack의 언어 이름 매핑
-_PACK_NAMES = {
-    "python": "python", "javascript": "javascript", "java": "java",
-    "c#": "c_sharp", "c++": "cpp", "c": "c", "r": "r",
-    "php": "php", "swift": "swift", "kotlin": "kotlin",
-    "dart": "dart", "typescript": "typescript", "go": "go",
-    "ruby": "ruby", "rust": "rust", "scala": "scala",
-    "julia": "julia", "matlab": "matlab", "groovy": "groovy",
-    "objective-c": "objc", "vb.net": "vb", "assembly": "asm",
-    "haskell": "haskell", "delphi": "pascal", "lua": "lua",
-    "perl": "perl", "prolog": "prolog", "fortran": "fortran",
-    "f#": "fsharp", "solidity": "solidity",
+CALC_FUNC = {
+    'python':       calculate_file_for_python,
+    'javascript':   calculate_file_for_javascript,
+    'java':         calculate_file_for_java,
+    'c#':           calculate_file_for_csharp,
+    'c++':          calculate_file_for_cpp,
+    'c':            calculate_file_for_c,
+    'r':            calculate_file_for_r,
+    'php':          calculate_file_for_php,
+    'swift':        calculate_file_for_swift,
+    'kotlin':       calculate_file_for_kotlin,
+    'dart':         calculate_file_for_dart,
+    'typescript':   calculate_file_for_typescript,
+    'go':           calculate_file_for_go,
+    'ruby':         calculate_file_for_ruby,
+    'rust':         calculate_file_for_rust,
+    'scala':        calculate_file_for_scala,
+    'julia':        calculate_file_for_julia,
+    'matlab':       calculate_file_for_matlab,
+    'groovy':       calculate_file_for_groovy,
+    'objective-c':  calculate_file_for_objective_c,
+    'vb.net':       calculate_file_for_vbnet,
+    'assembly':     calculate_file_for_assembly,
+    'haskell':      calculate_file_for_haskell,
+    'delphi':       calculate_file_for_delphi,
+    'lua':          calculate_file_for_lua,
+    'perl':         calculate_file_for_perl,
+    'prolog':       calculate_file_for_prolog,
+    'fortran':      calculate_file_for_fortran,
+    'f#':           calculate_file_for_fsharp,
+    'solidity':     calculate_file_for_solidity,
 }
 
-# 개별 패키지 fallback 매핑: (module_name, init_function)
-_INDIVIDUAL_PACKAGES = {
-    "python": ("tree_sitter_python", "language"),
-    "javascript": ("tree_sitter_javascript", "language"),
-    "java": ("tree_sitter_java", "language"),
-    "c#": ("tree_sitter_c_sharp", "language"),
-    "c++": ("tree_sitter_cpp", "language"),
-    "c": ("tree_sitter_c", "language"),
-    "r": ("tree_sitter_r", "language"),
-    "php": ("tree_sitter_php", "language_php"),
-    "swift": ("tree_sitter_swift", "language"),
-    "kotlin": ("tree_sitter_kotlin", "language"),
-    "dart": ("tree_sitter_dart", "language"),
-    "typescript": ("tree_sitter_typescript", "language_typescript"),
-    "go": ("tree_sitter_go", "language"),
-    "ruby": ("tree_sitter_ruby", "language"),
-    "rust": ("tree_sitter_rust", "language"),
-    "scala": ("tree_sitter_scala", "language"),
-    "julia": ("tree_sitter_julia", "language"),
-    "matlab": ("tree_sitter_matlab", "language"),
-    "groovy": ("tree_sitter_groovy", "language"),
-    "objective-c": ("tree_sitter_objc", "language"),
-    "vb.net": ("tree_sitter_vb", "language"),
-    "assembly": ("tree_sitter_asm", "language"),
-    "haskell": ("tree_sitter_haskell", "language"),
-    "delphi": ("tree_sitter_pascal", "language"),
-    "lua": ("tree_sitter_lua", "language"),
-    "perl": ("tree_sitter_perl", "language"),
-    "prolog": ("tree_sitter_prolog", "language"),
-    "fortran": ("tree_sitter_fortran", "language"),
-    "f#": ("tree_sitter_fsharp", "language"),
-    "solidity": ("tree_sitter_solidity", "language"),
+CALC_PARSER = {
+    'python':       create_python_parser,
+    'javascript':   create_javascript_parser,
+    'java':         create_java_parser,
+    'c#':           create_csharp_parser,
+    'c++':          create_cpp_parser,
+    'c':            create_c_parser,
+    'r':            create_r_parser,
+    'php':          create_php_parser,
+    'swift':        create_swift_parser,
+    'kotlin':       create_kotlin_parser,
+    'dart':         create_dart_parser,
+    'typescript':   create_typescript_parser,
+    'go':           create_go_parser,
+    'ruby':         create_ruby_parser,
+    'rust':         create_rust_parser,
+    'scala':        create_scala_parser,
+    'julia':        create_julia_parser,
+    'matlab':       create_matlab_parser,
+    'groovy':       create_groovy_parser,
+    'objective-c':  create_objective_c_parser,
+    'vb.net':       create_vbnet_parser,
+    'assembly':     create_assembly_parser,
+    'haskell':      create_haskell_parser,
+    'delphi':       create_delphi_parser,
+    'lua':          create_lua_parser,
+    'perl':         create_perl_parser,
+    'prolog':       create_prolog_parser,
+    'fortran':      create_fortran_parser,
+    'f#':           create_fsharp_parser,
+    'solidity':     create_solidity_parser,
 }
-
-# 캐시
-_parsers = {}
-_has_language_pack = None
-
-
-def _check_language_pack():
-    global _has_language_pack
-    if _has_language_pack is None:
-        try:
-            from tree_sitter_language_pack import get_parser as _gp
-            _has_language_pack = True
-        except ImportError:
-            _has_language_pack = False
-    return _has_language_pack
-
-
-def get_parser(lang: str) -> Parser:
-    """
-    언어에 맞는 tree-sitter Parser를 반환합니다.
-    
-    1순위: tree-sitter-language-pack (pip install tree-sitter-language-pack)
-    2순위: 개별 tree-sitter 패키지 (pip install tree-sitter-python 등)
-    
-    Args:
-        lang: 언어 이름 (예: "python", "java", "c++", "c#", "objective-c" 등)
-    
-    Returns:
-        tree_sitter.Parser 객체
-    
-    Raises:
-        ImportError: 해당 언어의 파서를 찾을 수 없을 때
-    """
-    if lang in _parsers:
-        return _parsers[lang]
-
-    parser = None
-
-    # 1순위: tree-sitter-language-pack
-    if _check_language_pack():
-        pack_name = _PACK_NAMES.get(lang, lang)
-        try:
-            from tree_sitter_language_pack import get_parser as _pack_get_parser
-            parser = _pack_get_parser(pack_name)
-            _parsers[lang] = parser
-            return parser
-        except Exception:
-            pass  # fallback to individual package
-
-    # 2순위: 개별 패키지
-    if lang in _INDIVIDUAL_PACKAGES:
-        mod_name, init_func = _INDIVIDUAL_PACKAGES[lang]
-        try:
-            import importlib
-            from tree_sitter import Language
-            mod = importlib.import_module(mod_name)
-            lang_obj = Language(getattr(mod, init_func)())
-            parser = Parser(lang_obj)
-            _parsers[lang] = parser
-            return parser
-        except (ImportError, ModuleNotFoundError):
-            pass
-
-    raise ImportError(
-        f"No tree-sitter parser found for '{lang}'. Install one of:\n"
-        f"  pip install tree-sitter-language-pack    (recommended, 248 languages)\n"
-        f"  pip install {_INDIVIDUAL_PACKAGES.get(lang, ('tree-sitter-' + lang,))[0].replace('_', '-')}"
-    )
-
-
-def is_available(lang: str) -> bool:
-    """해당 언어의 파서를 사용할 수 있는지 확인"""
-    try:
-        get_parser(lang)
-        return True
-    except ImportError:
-        return False
-
-
-def available_languages() -> list:
-    """사용 가능한 언어 목록 반환"""
-    return [lang for lang in _PACK_NAMES if is_available(lang)]

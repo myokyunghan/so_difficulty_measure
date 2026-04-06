@@ -22,8 +22,11 @@ def create_parser():
 class CognitiveComplexityCalculator:
     def __init__(self, src):
         self.src = src; self.results = []; self.details = []
-        if not hasattr(create_parser, '__wrapped_ok__'): return
-        self.p = create_parser(); self.tree = self.p.parse(bytes(src, "utf-8"))
+        try:
+            self.p = create_parser()
+            self.tree = self.p.parse(bytes(src, "utf-8"))
+        except (ImportError, Exception):
+            self.tree = None
 
     def _t(self, n): return "" if n is None else self.src[n.start_byte:n.end_byte]
     def _l(self, n): return n.start_point[0]+1
@@ -33,9 +36,7 @@ class CognitiveComplexityCalculator:
     def _ar(self, d, i): self.details.append(f"          +{i} ({d})")
 
     def calculate(self):
-        try:
-            _ = create_parser()
-        except ImportError:
+        if self.tree is None:
             return []
         self.results = []
         self._walk(self.tree.root_node, 0)

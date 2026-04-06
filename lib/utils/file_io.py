@@ -90,14 +90,15 @@ def load_df(path, col_list):
     for i in tqdm.tqdm(lst):
         if i.endswith('.json'):
             rows = load_json(f'{path}/{i}')
-            if isinstance(rows[0], list):
-                tmp = pd.DataFrame(
-                    [dict(zip(col_list, row)) for row in rows]
-                )
-                dfs.append(tmp)
-            elif isinstance(rows[0], dict):
-                tmp = pd.DataFrame(rows)
-                dfs.append(tmp)
+            if len(rows) >0 : 
+                if isinstance(rows[0], list): 
+                    tmp = pd.DataFrame(
+                        [dict(zip(col_list, row)) for row in rows]
+                    )
+                    dfs.append(tmp)
+                elif isinstance(rows[0], dict):
+                    tmp = pd.DataFrame(rows)
+                    dfs.append(tmp)
         elif i.endswith('.csv'):
             tmp = pd.read_csv(f'{path}/{i}', usecols=col_list, engine="pyarrow")
             dfs.append(tmp)

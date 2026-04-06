@@ -1,59 +1,101 @@
 """
 Python Cognitive Complexity Calculator
 =======================================
-Based on: G. Ann Campbell. 2018. "Cognitive Complexity: An Overview and
-Evaluation." In TechDebt '18, ICSE, Gothenburg, Sweden.
-https://doi.org/10.1145/3194164.3194186
+Based on:
+  - G. Ann Campbell. 2018. "Cognitive Complexity: An Overview and Evaluation."
+    TechDebt '18, ICSE, Gothenburg, Sweden.
+    https://doi.org/10.1145/3194164.3194186
+  - SonarSource. "Cognitive Complexity - a new way of measuring understandability."
+    Version 1.7, 29 August 2023.
+    https://www.sonarsource.com/docs/CognitiveComplexity.pdf
 
-And the SonarSource Cognitive Complexity white paper:
-https://www.sonarsource.com/docs/CognitiveComplexity.pdf
+═══════════════════════════════════════════════════════════════════
+Specification (Appendix B of the SonarSource white paper v1.7)
+═══════════════════════════════════════════════════════════════════
 
-Rules (Section 2 of the paper):
+B1. Increments (+1 each)
+────────────────────────
+  Structural (B):  +1, receives nesting penalty, increases nesting level
+    - if                                          → Python: if_statement
+    - switch                                      → Python: match_statement (3.10+)
+    - for, foreach                                → Python: for_statement
+    - while, do while                             → Python: while_statement
+    - catch                                       → Python: except_clause
+    - ternary operator                            → Python: conditional_expression (x if c else y)
 
-  2.1 Ignore readable shorthand structures
-      - No increment for the method/function itself
-      - No increment for null-coalescing operators
+  Hybrid (D):  +1, NO nesting penalty, but increases nesting level
+    - else if, elif                               → Python: elif_clause
+    - else                                        → Python: else_clause
 
-  2.2 Structural increment (+1) for each break in linear flow:
-      - if, elif, else                          (§2.2)
-      - for, while                              (§2.2)
-      - except                                  (§2.2, "catch")
-      - conditional expression (x if c else y)  (§2.2, "ternary operator")
-      - sequences of like boolean operators     (§2.2)
-      - recursion cycles                        (§2.2, not implemented - requires call graph)
+  Fundamental (C):  +1, NO nesting penalty, does NOT increase nesting level
+    - goto LABEL, break LABEL, continue LABEL     → N/A in Python
+    - sequences of binary logical operators       → Python: boolean_operator (and/or)
+    - each method in a recursion cycle             → Not implemented (requires call graph)
 
-  2.3 Nesting:
-    2.3.1 These structures INCREMENT the nesting level:
-      - if, elif, else, conditional expression  (§2.3.1)
-      - for, while                              (§2.3.1)
-      - except                                  (§2.3.1)
-      - nested methods: lambda, nested def      (§2.3.1, "nested methods and method-like structures")
+B2. Nesting level (these structures increase nesting for their children)
+────────────────────────────────────────────────────────────────────────
+    - if, else if/elif, else, ternary operator
+    - switch (match)
+    - for, foreach, while, do while
+    - catch (except)
+    - nested methods and method-like structures (lambda, nested def)
 
-    2.3.2 These structures RECEIVE a nesting increment (+nesting_level):
-      - if, conditional expression              (§2.3.2, NOT elif/else)
-      - for, while                              (§2.3.2)
-      - except                                  (§2.3.2)
+B3. Nesting increments (these structures RECEIVE +nesting_level penalty)
+────────────────────────────────────────────────────────────────────────
+    - if, ternary operator       (NOT elif, NOT else)
+    - switch (match)
+    - for, foreach, while, do while
+    - catch (except)
 
-  Summary:
-    elif/else: +1 structural only, NO nesting penalty,
-               but they DO increase nesting level for their children.
+═══════════════════════════════════════════════════════════════════
+Additional rules from the white paper
+═══════════════════════════════════════════════════════════════════
+
+  - try and finally: no increment, no nesting level change (p.7)
+  - switch/match: the entire switch + all cases = single structural increment (p.7)
+  - Logical operators: +1 per sequence of same operator, +1 each time operator
+    changes. e.g. a && b || c && d → +1(&&) +1(||) +1(&&) = +3 (p.7-8)
+
+═══════════════════════════════════════════════════════════════════
+Python-specific (Appendix A of the white paper)
+═══════════════════════════════════════════════════════════════════
+
+  Python Decorator exception (p.15, added in v1.3):
+    A function whose body contains ONLY a nested function + return statement
+    is treated as a decorator: the nested function's nesting starts at 0
+    instead of being incremented. If any other statement (besides the nested
+    def and return) exists in the body, the standard nesting rules apply.
+    Also applies recursively for decorator_generator patterns (nested 2 levels).
+
+  Python for-else / while-else:
+    Not in the original spec but Python-specific. Treated as hybrid increment
+    (+1 structural, no nesting penalty), similar to else in if-chains.
+
+═══════════════════════════════════════════════════════════════════
+Extension: Bare code fallback
+═══════════════════════════════════════════════════════════════════
+
+  For Stack Overflow snippets and bare code without function declarations:
+    1. Calculator first searches for function/method declarations in the AST.
+    2. If none found, wraps the source in `def __top__(): ...` and re-parses.
+    3. Result is labeled as <top-level> with adjusted line numbers.
 
 Dependencies: pip install tree-sitter tree-sitter-python
 """
 import os
+import re
 import sys
 import json
 from tree_sitter import Language, Parser
 
+
 def create_parser():
     """tree-sitter-language-pack 우선, 개별 패키지 fallback"""
-    # 1. tree-sitter-language-pack
     try:
         from tree_sitter_language_pack import get_parser
         return get_parser("python")
     except Exception:
         pass
-    # 2. 개별 패키지
     try:
         import tree_sitter_python as _mod
         return Parser(Language(_mod.language()))
@@ -73,6 +115,8 @@ class CognitiveComplexityCalculator:
         self.results = []
         self.details = []
 
+    # ── Helpers ──
+
     def _text(self, node):
         if node is None:
             return ""
@@ -86,7 +130,8 @@ class CognitiveComplexityCalculator:
         total = structural + nesting
         if nesting > 0:
             self.details.append(
-                f"  Line {line:>4}: +{total} ({kind}: +{structural} structural, +{nesting} nesting)"
+                f"  Line {line:>4}: +{total} ({kind}: "
+                f"+{structural} structural, +{nesting} nesting)"
             )
         else:
             self.details.append(f"  Line {line:>4}: +{total} ({kind})")
@@ -99,10 +144,45 @@ class CognitiveComplexityCalculator:
     def calculate(self):
         self.results = []
         self._walk_top_level(self.tree.root_node)
+
+        # Bare code fallback (Stack Overflow snippets 등)
+        if not self.results:
+            wrapped = "def __top__():\n" + self._indent(self.source_code) + "\n"
+            try:
+                tree2 = self.parser.parse(bytes(wrapped, "utf-8"))
+                if not tree2.root_node.has_error:
+                    orig_src, orig_tree = self.source_code, self.tree
+                    self.source_code = wrapped
+                    self.tree = tree2
+                    self.results = []
+                    self._walk_top_level(tree2.root_node)
+                    self.source_code = orig_src
+                    self.tree = orig_tree
+                    for r in self.results:
+                        r["function"] = "<top-level>"
+                        r["start_line"] = max(1, r["start_line"] - 1)
+                        r["end_line"] = max(1, r["end_line"] - 1)
+                        r["details"] = [
+                            re.sub(
+                                r"  Line\s+(\d+):",
+                                lambda m: f"  Line {max(1, int(m.group(1)) - 1):>4}:",
+                                d,
+                            )
+                            if d.startswith("  Line ") else d
+                            for d in r["details"]
+                        ]
+            except Exception:
+                pass
+
         return self.results
 
+    @staticmethod
+    def _indent(src):
+        lines = src.split("\n")
+        return "\n".join("    " + line if line.strip() else line for line in lines)
+
     def _walk_top_level(self, node):
-        """최상위에서 함수/클래스를 찾음. 무한 재귀 방지를 위해 알려진 타입만 탐색."""
+        """최상위에서 함수/클래스를 찾음."""
         for child in node.children:
             if child.type == "function_definition":
                 self._process_function(child)
@@ -114,8 +194,6 @@ class CognitiveComplexityCalculator:
                         self._process_function(sub)
                     elif sub.type == "class_definition":
                         self._walk_class(sub)
-            # module 등 알려진 컨테이너만 재귀
-            # 그 외 노드(expression, assignment 등)는 탐색하지 않음
 
     def _walk_class(self, class_node):
         body = class_node.child_by_field_name("body")
@@ -134,7 +212,7 @@ class CognitiveComplexityCalculator:
                         self._walk_class(sub)
 
     def _process_function(self, func_node):
-        """함수 하나의 complexity 계산. §2.1: 함수 자체에는 increment 없음."""
+        """함수 하나의 complexity 계산. 함수 자체에는 increment 없음 (Ignore shorthand)."""
         name_node = func_node.child_by_field_name("name")
         func_name = self._text(name_node) if name_node else "<anonymous>"
 
@@ -163,14 +241,11 @@ class CognitiveComplexityCalculator:
     def _visit(self, node, nesting):
         t = node.type
 
-        # §2.2, §2.3.2: if → +1 structural, +nesting penalty
-        # §2.3.1: if → increments nesting level
+        # ── B1 structural: if → +1, B3: receives nesting, B2: increases nesting ──
         if t == "if_statement":
             return self._handle_if_chain(node, nesting)
 
-        # §2.2: for → +1 structural
-        # §2.3.1: for → increments nesting level
-        # §2.3.2: for → receives nesting increment
+        # ── B1 structural: for → +1, B3: receives nesting, B2: increases nesting ──
         if t == "for_statement":
             inc = 1 + nesting
             self._add_detail(node, "for", 1, nesting)
@@ -178,7 +253,7 @@ class CognitiveComplexityCalculator:
             body = node.child_by_field_name("body")
             if body:
                 c += self._visit_children(body, nesting + 1)
-            # Python for/else: else is a break in flow → +1
+            # Python for-else: hybrid +1, no nesting penalty
             alt = node.child_by_field_name("alternative")
             if alt and alt.type == "else_clause":
                 c += 1
@@ -188,9 +263,7 @@ class CognitiveComplexityCalculator:
                     c += self._visit_children(body2, nesting + 1)
             return c
 
-        # §2.2: while → +1 structural
-        # §2.3.1: while → increments nesting level
-        # §2.3.2: while → receives nesting increment
+        # ── B1 structural: while → +1, B3: receives nesting, B2: increases nesting ──
         if t == "while_statement":
             inc = 1 + nesting
             self._add_detail(node, "while", 1, nesting)
@@ -201,7 +274,7 @@ class CognitiveComplexityCalculator:
             body = node.child_by_field_name("body")
             if body:
                 c += self._visit_children(body, nesting + 1)
-            # Python while/else
+            # Python while-else: hybrid +1, no nesting penalty
             alt = node.child_by_field_name("alternative")
             if alt and alt.type == "else_clause":
                 c += 1
@@ -211,15 +284,34 @@ class CognitiveComplexityCalculator:
                     c += self._visit_children(body2, nesting + 1)
             return c
 
-        # §2.2: catch → +1 structural (try itself: no increment)
-        # §2.3.1: catch → increments nesting level
-        # §2.3.2: catch → receives nesting increment
+        # ── B1 structural: switch → +1 (single increment for entire match+cases)
+        # ── B3: receives nesting, B2: increases nesting ──
+        if t == "match_statement":
+            inc = 1 + nesting
+            self._add_detail(node, "match", 1, nesting)
+            c = inc
+            body = node.child_by_field_name("body")
+            if body:
+                for child in body.children:
+                    if child.type == "case_clause":
+                        # case itself: no additional increment (switch rule, p.7)
+                        consequence = child.child_by_field_name("consequence")
+                        if consequence:
+                            c += self._visit_children(consequence, nesting + 1)
+                        # guard clause (case X if cond): visit the guard condition
+                        guard = child.child_by_field_name("guard")
+                        if guard:
+                            c += self._visit_children(guard, nesting)
+            return c
+
+        # ── try: no increment, no nesting change (p.7) ──
         if t == "try_statement":
             c = 0
             for child in node.children:
                 c += self._visit(child, nesting)
             return c
 
+        # ── B1 structural: catch → +1, B3: receives nesting, B2: increases nesting ──
         if t == "except_clause":
             inc = 1 + nesting
             self._add_detail(node, "except", 1, nesting)
@@ -229,7 +321,7 @@ class CognitiveComplexityCalculator:
                     c += self._visit_children(child, nesting + 1)
             return c
 
-        # Python finally: no increment (not a branch)
+        # ── finally: no increment, no nesting change (p.7) ──
         if t == "finally_clause":
             c = 0
             for child in node.children:
@@ -237,9 +329,7 @@ class CognitiveComplexityCalculator:
                     c += self._visit_children(child, nesting)
             return c
 
-        # §2.2: ternary → +1 structural
-        # §2.3.1: ternary → increments nesting level
-        # §2.3.2: ternary → receives nesting increment
+        # ── B1 structural: ternary → +1, B3: receives nesting, B2: increases nesting ──
         if t == "conditional_expression":
             inc = 1 + nesting
             self._add_detail(node, "conditional expr", 1, nesting)
@@ -250,11 +340,11 @@ class CognitiveComplexityCalculator:
                 c += self._visit(child, nesting + 1)
             return c
 
-        # §2.2: sequences of like binary logical operators
+        # ── B1 fundamental: sequences of binary logical operators (p.7-8) ──
         if t == "boolean_operator":
             return self._handle_boolean(node, nesting)
 
-        # §2.3.1: nested methods → increment nesting level
+        # ── B2: nested methods → increment nesting level (no structural increment) ──
         if t == "lambda":
             c = 0
             body = node.child_by_field_name("body")
@@ -262,14 +352,21 @@ class CognitiveComplexityCalculator:
                 c += self._visit(body, nesting + 1)
             return c
 
-        # §2.3.1: nested methods → increment nesting level
+        # ── B2: nested def → increment nesting level ──
+        # ── Appendix A: Python decorator exception (p.15) ──
         if t == "function_definition":
             c = 0
             body = node.child_by_field_name("body")
             if body:
-                c += self._visit_children(body, nesting + 1)
+                parent_func = self._find_parent_function(node)
+                if parent_func and self._is_decorator_pattern(parent_func):
+                    # Decorator exception: nested def does NOT increment nesting
+                    c += self._visit_children(body, nesting)
+                else:
+                    c += self._visit_children(body, nesting + 1)
             return c
 
+        # decorated_definition 내부의 함수/클래스 처리
         if t == "decorated_definition":
             c = 0
             for child in node.children:
@@ -283,10 +380,9 @@ class CognitiveComplexityCalculator:
     # ── if / elif / else chain ──
 
     def _handle_if_chain(self, if_node, nesting):
+        """B1 structural: if → +1, B3: receives nesting, B2: increases nesting."""
         c = 0
 
-        # §2.2: if → +1 structural
-        # §2.3.2: if → +nesting penalty
         inc = 1 + nesting
         self._add_detail(if_node, "if", 1, nesting)
         c += inc
@@ -296,20 +392,14 @@ class CognitiveComplexityCalculator:
         if cond:
             c += self._visit(cond, nesting)
 
-        # §2.3.1: if → increases nesting level for consequence
+        # B2: if increases nesting level for consequence
         consequence = if_node.child_by_field_name("consequence")
         if consequence:
             c += self._visit_children(consequence, nesting + 1)
 
-        # elif / else 처리
+        # elif / else: hybrid increment (B1 hybrid: +1, B2: increases nesting, B3: NO penalty)
         for child in if_node.children:
-            fname = None
-            if child.parent:
-                for i, c2 in enumerate(child.parent.children):
-                    if c2 == child:
-                        fname = child.parent.field_name_for_child(i)
-                        break
-
+            fname = self._field_name(child)
             if child.type == "elif_clause" and fname == "alternative":
                 c += self._handle_elif(child, nesting)
             elif child.type == "else_clause" and fname == "alternative":
@@ -318,31 +408,21 @@ class CognitiveComplexityCalculator:
         return c
 
     def _handle_elif(self, elif_node, nesting):
-        c = 0
-
-        # §2.2: else if → +1 structural
-        # §2.3.2: else if → NO nesting penalty (not in §2.3.2 list)
-        c += 1
+        """B1 hybrid: elif → +1, NO nesting penalty, but increases nesting level."""
+        c = 1
         self._add_detail(elif_node, "elif", 1, 0)
 
         cond = elif_node.child_by_field_name("condition")
         if cond:
             c += self._visit(cond, nesting)
 
-        # §2.3.1: else if → increases nesting level for consequence
         consequence = elif_node.child_by_field_name("consequence")
         if consequence:
             c += self._visit_children(consequence, nesting + 1)
 
         # chained elif / else
         for child in elif_node.children:
-            fname = None
-            if child.parent:
-                for i, c2 in enumerate(child.parent.children):
-                    if c2 == child:
-                        fname = child.parent.field_name_for_child(i)
-                        break
-
+            fname = self._field_name(child)
             if child.type == "elif_clause" and fname == "alternative":
                 c += self._handle_elif(child, nesting)
             elif child.type == "else_clause" and fname == "alternative":
@@ -351,31 +431,47 @@ class CognitiveComplexityCalculator:
         return c
 
     def _handle_else(self, else_node, nesting):
-        c = 0
-
-        # §2.2: else → +1 structural
-        # §2.3.2: else → NO nesting penalty
-        c += 1
+        """B1 hybrid: else → +1, NO nesting penalty, but increases nesting level."""
+        c = 1
         self._add_detail(else_node, "else", 1, 0)
 
-        # §2.3.1: else → increases nesting level for body
         body = else_node.child_by_field_name("body")
         if body:
             c += self._visit_children(body, nesting + 1)
         return c
 
-    # ── Boolean operator sequences (§2.2) ──
+    @staticmethod
+    def _field_name(node):
+        """노드의 부모에서 이 노드의 field name을 찾음."""
+        if node.parent is None:
+            return None
+        for i, child in enumerate(node.parent.children):
+            if child == node:
+                return node.parent.field_name_for_child(i)
+        return None
+
+    @staticmethod
+    def _find_parent_function(node):
+        """AST를 올라가며 가장 가까운 부모 function_definition을 찾음.
+        node 자신이 function_definition인 경우 건너뜀."""
+        cur = node.parent
+        while cur is not None:
+            if cur.type == "function_definition":
+                return cur
+            cur = cur.parent
+        return None
+
+    # ── Boolean operator sequences (B1 fundamental, p.7-8) ──
 
     def _handle_boolean(self, node, nesting):
         """
-        §2.2: "sequences of like binary logical operators"
-        Same operator in sequence → +1 (once for the whole sequence)
-        Switch to different operator → +1 additional
+        Sequences of like binary logical operators.
+        Same operator in sequence → +1 (once for the whole sequence).
+        Switch to different operator → +1 additional.
 
-        Examples:
-            a and b and c       → +1 (one sequence of 'and')
-            a and b or c        → +2 (one 'and', then switch to 'or')
-            a or b or c and d   → +2 (one 'or', then switch to 'and')
+        Examples (from the white paper p.7-8):
+            a and b and c       → +1
+            a and b or c and d  → +3 (+1 and, +1 or, +1 and)
         """
         ops = []
         self._collect_boolean_ops(node, ops)
@@ -388,13 +484,15 @@ class CognitiveComplexityCalculator:
         for op in ops:
             if prev is None or op != prev:
                 c += 1
-                desc = f"logical sequence '{op}'" if prev is None else f"logical change to '{op}'"
+                desc = (f"logical sequence '{op}'"
+                        if prev is None
+                        else f"logical change to '{op}'")
                 self._add_detail_raw(desc, 1)
                 prev = op
         return c
 
     def _collect_boolean_ops(self, node, ops):
-        """boolean_operator 트리에서 and/or를 좌→우 순서로 수집"""
+        """boolean_operator 트리에서 and/or를 좌→우 순서로 수집."""
         if node.type != "boolean_operator":
             return
 
@@ -415,6 +513,43 @@ class CognitiveComplexityCalculator:
 
         if right and right.type == "boolean_operator":
             self._collect_boolean_ops(right, ops)
+
+    # ── Python decorator exception (Appendix A, p.15) ──
+
+    def _is_decorator_pattern(self, func_node):
+        """
+        Appendix A (p.15): Python decorator exception.
+        A function whose body contains ONLY:
+          - one or more nested function definitions, AND
+          - a return statement
+        is treated as a decorator pattern. The nested def does NOT
+        increment the nesting level.
+
+        Also applies recursively for decorator_generator patterns
+        (e.g., outer → generator → decorator, all containing only
+        nested defs and returns).
+        """
+        body = func_node.child_by_field_name("body")
+        if body is None:
+            return False
+
+        has_nested_func = False
+        for child in body.children:
+            if child.type == "function_definition":
+                has_nested_func = True
+            elif child.type == "return_statement":
+                pass  # allowed
+            elif child.type == "expression_statement":
+                # docstring은 허용
+                if (child.children and
+                        child.children[0].type in ("string", "concatenated_string")):
+                    pass
+                else:
+                    return False
+            else:
+                return False
+
+        return has_nested_func
 
 
 # ── Public API ──
@@ -455,7 +590,8 @@ def print_results(results, verbose=True):
         fname = r.get("file", "")
         if fname:
             print(f"File: {fname}")
-        print(f"Function: {r['function']} (lines {r['start_line']}-{r['end_line']})")
+        print(f"Function: {r['function']} "
+              f"(lines {r['start_line']}-{r['end_line']})")
         print(f"Cognitive Complexity: {r['complexity']}")
         if verbose and r["details"]:
             print("Details:")
@@ -471,86 +607,84 @@ def print_results(results, verbose=True):
 
 if __name__ == "__main__":
 
-    # ── Test cases with expected values from the paper ──
     test_code = '''
 def simple_function():
     x = 10
-# Expected: 0 (§2.1: no increment for method itself)
+# Expected: 0
 
 def sum_of_primes(max_val):
     total = 0
-    for i in range(1, max_val + 1):                # +1 (for, §2.2)
-        for j in range(2, i):                       # +2 (for, §2.2 +1, §2.3.2 nesting=1)
-            if i % j == 0:                          # +3 (if, §2.2 +1, §2.3.2 nesting=2)
+    for i in range(1, max_val + 1):
+        for j in range(2, i):
+            if i % j == 0:
                 break
-        else:                                       # +1 (for-else, §2.2)
+        else:
             total += i
     return total
 # Expected: 7
 
 def complex_example(a, b, c):
-    if a and b:                                     # +1 (if, §2.2) +1 (and, §2.2)
-        for i in range(c):                          # +2 (for, nesting=1)
-            if i > 10:                              # +3 (if, nesting=2)
+    if a and b:
+        for i in range(c):
+            if i > 10:
                 return i
-            elif i > 5:                             # +1 (elif, §2.2, no nesting penalty §2.3.2)
+            elif i > 5:
                 continue
-            else:                                   # +1 (else, §2.2, no nesting penalty)
+            else:
                 print(i)
-    elif c > 0:                                     # +1 (elif, §2.2)
+    elif c > 0:
         pass
 # Expected: 10
 
 def boolean_logic(a, b, c, d):
-    if a and b and c:                               # +1 (if) +1 (and sequence)
+    if a and b and c:
         return True
-    elif a or b or c:                               # +1 (elif) +1 (or sequence)
+    elif a or b or c:
         return False
-    elif a and b or c and d:                        # +1 (elif) +1(and) +1(or) +1(and)
+    elif a and b or c and d:
         return True
-    else:                                           # +1 (else)
+    else:
         return False
 # Expected: 9
 
 def try_example():
-    try:                                            # no increment (§2.2: try not listed)
-        if True:                                    # +1 (if)
+    try:
+        if True:
             pass
-    except Exception:                               # +1 (except/catch, §2.2)
-        if True:                                    # +2 (if, nesting=1)
+    except Exception:
+        if True:
             raise
 # Expected: 4
 
 def nested_def_example():
-    def inner():                                    # nesting +1 (§2.3.1)
-        if True:                                    # +2 (if, nesting=1)
+    def inner():
+        if True:
             pass
     inner()
 # Expected: 2
 
 def ternary_example(flag):
-    return 1 if flag else 0                         # +1 (ternary, §2.2)
+    return 1 if flag else 0
 # Expected: 1
 
 def lambda_example():
     items = [1, 2, 3]
-    result = list(filter(lambda x: x > 1, items))  # lambda nesting+1, no control flow
+    result = list(filter(lambda x: x > 1, items))
 # Expected: 0
 
 def finally_example():
     try:
         pass
-    except Exception:                               # +1 (except)
+    except Exception:
         pass
-    finally:                                        # no increment (finally is not a branch)
-        if True:                                    # +1 (if, nesting=0, finally does not nest)
+    finally:
+        if True:
             pass
 # Expected: 2
 '''
 
     print("Python Cognitive Complexity Calculator")
-    print("Based on Campbell 2018 (ICSE TechDebt '18)")
-    print("https://doi.org/10.1145/3194164.3194186")
+    print("SonarSource Specification v1.7 (29 August 2023)")
     print("=" * 60)
 
     results = calculate_source(test_code)
