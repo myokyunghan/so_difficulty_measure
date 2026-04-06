@@ -1,51 +1,84 @@
 """
 C Cognitive Complexity Calculator
-==================================
-Based on: G. Ann Campbell. 2018. "Cognitive Complexity: An Overview and
-Evaluation." In TechDebt '18, ICSE, Gothenburg, Sweden.
-https://doi.org/10.1145/3194164.3194186
+===================================
+Based on:
+  - G. Ann Campbell. 2018. "Cognitive Complexity: An Overview and Evaluation."
+    TechDebt '18, ICSE, Gothenburg, Sweden.
+    https://doi.org/10.1145/3194164.3194186
+  - SonarSource. "Cognitive Complexity - a new way of measuring understandability."
+    Version 1.7, 29 August 2023.
+    https://www.sonarsource.com/docs/CognitiveComplexity.pdf
 
-Rules (Section 2 of the paper):
+═══════════════════════════════════════════════════════════════════
+Specification (Appendix B of the SonarSource white paper v1.7)
+═══════════════════════════════════════════════════════════════════
 
-  2.1 Ignore readable shorthand structures
-      - No increment for the function itself
+B1. Increments (+1 each)
+────────────────────────
+  Structural (B):  +1, receives nesting penalty, increases nesting level
+    - if                                  → C: if_statement
+    - switch                              → C: switch_statement (single +1, p.7)
+    - for                                 → C: for_statement
+    - while, do while                     → C: while_statement, do_statement
+    - ternary operator                    → C: conditional_expression
+    - #if, #ifdef, #ifndef                → C: preproc_if, preproc_ifdef
 
-  2.2 Structural increment (+1):
-      - if, else if, else                          (§2.2)
-      - switch                                     (§2.2)
-      - for, while, do...while                     (§2.2)
-      - ternary (? :)                              (§2.2)
-      - goto LABEL                                 (§2.2)
-      - sequences of like binary logical operators (§2.2)
+  Hybrid (D):  +1, NO nesting penalty, but increases nesting level
+    - else if                             → C: else_clause containing if_statement
+    - else                                → C: else_clause containing compound_statement
+    - #else, #elif                        → C: preproc_else, preproc_elif
 
-  2.3 Nesting:
-    2.3.1 Increment nesting level:
-      - if, else if, else, switch, ternary         (§2.3.1)
-      - for, while, do...while                     (§2.3.1)
+  Fundamental (C):  +1, NO nesting penalty, does NOT increase nesting level
+    - goto                                → C: goto_statement
+    - sequences of binary logical ops     → C: binary_expression with && / ||
+    - each method in a recursion cycle    → Not implemented
 
-    2.3.2 Receive nesting increment (+nesting_level):
-      - if, switch, ternary                        (§2.3.2, NOT else if/else)
-      - for, while, do...while                     (§2.3.2)
+  Not applicable in C:
+    - catch (no try/catch in C)
+    - break/continue LABEL (C has no labeled break/continue)
+    - lambda / nested functions (not in standard C)
 
-  Note: C has no catch, lambda, or class.
-        goto is the primary jump mechanism.
+B2. Nesting level
+────────────────────────────────────────────────────────────────────────
+    - if, else if, else, ternary, #if, #ifdef
+    - switch, for, while, do while
+
+B3. Nesting increments (receive +nesting_level penalty)
+────────────────────────────────────────────────────────────────────────
+    - if, ternary       (NOT else if, NOT else)
+    - switch, for, while, do while
+
+═══════════════════════════════════════════════════════════════════
+Additional rules
+═══════════════════════════════════════════════════════════════════
+
+  - switch: entire switch + all cases = single structural increment (p.7)
+  - goto: +1 fundamental (p.8)
+  - Logical operators (&&, ||): +1 per sequence, +1 on change (p.7-8)
+  - Early return: no increment (p.8)
+
+═══════════════════════════════════════════════════════════════════
+Extension: Bare code fallback
+═══════════════════════════════════════════════════════════════════
+
+  For snippets without function declarations:
+    Wraps in `void __top__() { ... }` and re-parses.
 
 Dependencies: pip install tree-sitter tree-sitter-c
 """
 import os
+import re
 import sys
 import json
 from tree_sitter import Language, Parser
 
+
 def create_parser():
-    """tree-sitter-language-pack 우선, 개별 패키지 fallback"""
-    # 1. tree-sitter-language-pack
     try:
         from tree_sitter_language_pack import get_parser
         return get_parser("c")
     except Exception:
         pass
-    # 2. 개별 패키지
     try:
         import tree_sitter_c as _mod
         return Parser(Language(_mod.language()))
@@ -78,51 +111,84 @@ class CognitiveComplexityCalculator:
         total = structural + nesting
         if nesting > 0:
             self.details.append(
-                f"  Line {line:>4}: +{total} ({kind}: +{structural} structural, +{nesting} nesting)"
-            )
+                f"  Line {line:>4}: +{total} ({kind}: "
+                f"+{structural} structural, +{nesting} nesting)")
         else:
             self.details.append(f"  Line {line:>4}: +{total} ({kind})")
 
     def _add_detail_raw(self, description, increment):
         self.details.append(f"          +{increment} ({description})")
 
-    def _get_func_name(self, func_node):
-        """function_definition에서 함수 이름 추출"""
-        declarator = func_node.child_by_field_name("declarator")
-        if declarator is None:
-            return "<anonymous>"
-        name_node = declarator.child_by_field_name("declarator")
-        if name_node:
-            return self._text(name_node)
-        for child in declarator.children:
-            if child.type in ("identifier", "field_identifier"):
-                return self._text(child)
-        return self._text(declarator)
-
-    # ── Top-level traversal (recursion-safe) ──
+    # ── Top-level traversal ──
 
     def calculate(self):
         self.results = []
         self._walk_top_level(self.tree.root_node)
+
+        # Bare code fallback
+        if not self.results:
+            wrapped = "void __top__() {\n" + self.source_code + "\n}"
+            try:
+                tree2 = self.parser.parse(bytes(wrapped, "utf-8"))
+                if not tree2.root_node.has_error:
+                    orig_src, orig_tree = self.source_code, self.tree
+                    self.source_code = wrapped
+                    self.tree = tree2
+                    self.results = []
+                    self._walk_top_level(tree2.root_node)
+                    self.source_code = orig_src
+                    self.tree = orig_tree
+                    for r in self.results:
+                        r["function"] = "<top-level>"
+                        r["start_line"] = max(1, r["start_line"] - 1)
+                        r["end_line"] = max(1, r["end_line"] - 1)
+                        r["details"] = [
+                            re.sub(r"  Line\s+(\d+):",
+                                   lambda m: f"  Line {max(1, int(m.group(1))-1):>4}:", d)
+                            if d.startswith("  Line ") else d
+                            for d in r["details"]
+                        ]
+            except Exception:
+                pass
         return self.results
 
     def _walk_top_level(self, node):
-        """최상위에서 함수를 찾음."""
         for child in node.children:
             if child.type == "function_definition":
                 self._process_function(child)
-            # C에는 namespace/class가 없으므로 다른 타입은 무시
+            elif child.type in ("struct_specifier", "union_specifier",
+                                "enum_specifier"):
+                pass  # C structs don't contain methods
+            elif child.type == "preproc_ifdef":
+                # Functions may be inside preprocessor blocks
+                for sub in child.children:
+                    if sub.type == "function_definition":
+                        self._process_function(sub)
+                    elif sub.type == "preproc_else":
+                        for sub2 in sub.children:
+                            if sub2.type == "function_definition":
+                                self._process_function(sub2)
+            elif child.type == "preproc_if":
+                for sub in child.children:
+                    if sub.type == "function_definition":
+                        self._process_function(sub)
+                    elif sub.type in ("preproc_else", "preproc_elif"):
+                        for sub2 in sub.children:
+                            if sub2.type == "function_definition":
+                                self._process_function(sub2)
+            elif child.type == "declaration":
+                # Static inline functions in headers
+                for sub in child.children:
+                    if sub.type == "function_definition":
+                        self._process_function(sub)
 
     def _process_function(self, func_node):
-        """§2.1: 함수 자체에는 increment 없음"""
-        func_name = self._get_func_name(func_node)
-
+        func_name = self._extract_func_name(func_node)
         self.details = []
         body = func_node.child_by_field_name("body")
         complexity = 0
         if body:
             complexity = self._visit_children(body, 0)
-
         self.results.append({
             "function": func_name,
             "complexity": complexity,
@@ -130,6 +196,23 @@ class CognitiveComplexityCalculator:
             "end_line": func_node.end_point[0] + 1,
             "details": list(self.details),
         })
+
+    def _extract_func_name(self, func_node):
+        decl = func_node.child_by_field_name("declarator")
+        if decl is None:
+            return "<anonymous>"
+        return self._find_identifier(decl)
+
+    def _find_identifier(self, node):
+        if node.type in ("identifier", "field_identifier"):
+            return self._text(node)
+        decl = node.child_by_field_name("declarator")
+        if decl:
+            return self._find_identifier(decl)
+        for child in node.children:
+            if child.type in ("identifier", "field_identifier"):
+                return self._text(child)
+        return "<anonymous>"
 
     # ── Node visitors ──
 
@@ -142,26 +225,11 @@ class CognitiveComplexityCalculator:
     def _visit(self, node, nesting):
         t = node.type
 
-        # §2.2, §2.3.2: if → +1 structural, +nesting penalty
+        # ── B1 structural: if ──
         if t == "if_statement":
-            return self._handle_if_chain(node, nesting, is_first=True)
+            return self._handle_if_chain(node, nesting, is_else_if=False)
 
-        # §2.2: switch → +1 structural
-        # §2.3.2: switch → receives nesting increment
-        if t == "switch_statement":
-            inc = 1 + nesting
-            self._add_detail(node, "switch", 1, nesting)
-            c = inc
-            body = node.child_by_field_name("body")
-            if body:
-                for child in body.children:
-                    if child.type == "case_statement":
-                        c += self._visit_case_body(child, nesting + 1)
-                    else:
-                        c += self._visit(child, nesting + 1)
-            return c
-
-        # §2.2: for → +1 structural
+        # ── B1 structural: for ──
         if t == "for_statement":
             inc = 1 + nesting
             self._add_detail(node, "for", 1, nesting)
@@ -171,34 +239,45 @@ class CognitiveComplexityCalculator:
                 c += self._visit_children(body, nesting + 1)
             return c
 
-        # §2.2: while → +1 structural
+        # ── B1 structural: while ──
         if t == "while_statement":
             inc = 1 + nesting
             self._add_detail(node, "while", 1, nesting)
             c = inc
             cond = node.child_by_field_name("condition")
             if cond:
-                c += self._visit(cond, nesting)
+                c += self._visit_children(cond, nesting)
             body = node.child_by_field_name("body")
             if body:
                 c += self._visit_children(body, nesting + 1)
             return c
 
-        # §2.2: do...while → +1 structural
+        # ── B1 structural: do-while ──
         if t == "do_statement":
             inc = 1 + nesting
             self._add_detail(node, "do-while", 1, nesting)
             c = inc
             cond = node.child_by_field_name("condition")
             if cond:
-                c += self._visit(cond, nesting)
+                c += self._visit_children(cond, nesting)
             body = node.child_by_field_name("body")
             if body:
                 c += self._visit_children(body, nesting + 1)
             return c
 
-        # §2.2: ternary → +1 structural
-        # §2.3.2: ternary → receives nesting increment
+        # ── B1 structural: switch (single +1, p.7) ──
+        if t == "switch_statement":
+            inc = 1 + nesting
+            self._add_detail(node, "switch", 1, nesting)
+            c = inc
+            body = node.child_by_field_name("body")
+            if body:
+                for child in body.children:
+                    if child.type == "case_statement":
+                        c += self._visit_children(child, nesting + 1)
+            return c
+
+        # ── B1 structural: ternary (conditional_expression) ──
         if t == "conditional_expression":
             inc = 1 + nesting
             self._add_detail(node, "ternary", 1, nesting)
@@ -206,20 +285,65 @@ class CognitiveComplexityCalculator:
             cond = node.child_by_field_name("condition")
             if cond:
                 c += self._visit(cond, nesting)
-            cons = node.child_by_field_name("consequence")
-            if cons:
-                c += self._visit(cons, nesting + 1)
+            consequence = node.child_by_field_name("consequence")
+            if consequence:
+                c += self._visit(consequence, nesting + 1)
             alt = node.child_by_field_name("alternative")
             if alt:
                 c += self._visit(alt, nesting + 1)
             return c
 
-        # §2.2: goto → +1 structural
+        # ── B1 fundamental: logical operators (p.7-8) ──
+        if t == "binary_expression":
+            op = node.child_by_field_name("operator")
+            if op and self._text(op) in ("&&", "||"):
+                return self._handle_boolean(node, nesting)
+            return self._visit_children(node, nesting)
+
+        # ── B1 fundamental: goto (p.8) ──
         if t == "goto_statement":
             self._add_detail(node, "goto", 1, 0)
             return 1
 
-        # labeled_statement: label 자체는 increment 없음
+        # ── B1 structural: preprocessor conditionals ──
+        if t in ("preproc_if", "preproc_ifdef"):
+            inc = 1 + nesting
+            self._add_detail(node, "#if", 1, nesting)
+            c = inc
+            for child in node.children:
+                if child.type in ("preproc_else", "preproc_elif"):
+                    c += self._visit(child, nesting)
+                elif child.type not in ("#if", "#ifdef", "#ifndef", "#endif",
+                                        "identifier", "preproc_arg", "\n"):
+                    c += self._visit(child, nesting + 1)
+            return c
+
+        # ── B1 hybrid: #else / #elif ──
+        if t == "preproc_else":
+            c = 1
+            self._add_detail(node, "#else", 1, 0)
+            for child in node.children:
+                if child.type not in ("#else", "\n"):
+                    c += self._visit(child, nesting + 1)
+            return c
+
+        if t == "preproc_elif":
+            c = 1
+            self._add_detail(node, "#elif", 1, 0)
+            for child in node.children:
+                if child.type not in ("#elif", "\n", "preproc_arg"):
+                    c += self._visit(child, nesting + 1)
+            return c
+
+        # ── else_clause: handled by _handle_if_chain ──
+        if t == "else_clause":
+            return 0
+
+        # ── parenthesized_expression: unwrap ──
+        if t == "parenthesized_expression":
+            return self._visit_children(node, nesting)
+
+        # ── labeled_statement: just visit body ──
         if t == "labeled_statement":
             c = 0
             for child in node.children:
@@ -227,105 +351,59 @@ class CognitiveComplexityCalculator:
                     c += self._visit(child, nesting)
             return c
 
-        # §2.2: sequences of like binary logical operators
-        if t == "binary_expression":
-            return self._handle_binary(node, nesting)
-
-        # parenthesized_expression
-        if t == "parenthesized_expression":
-            return self._visit_children(node, nesting)
-
-        # 기타: 자식 재귀
+        # ── default: recurse ──
         return self._visit_children(node, nesting)
-
-    def _visit_case_body(self, case_node, nesting):
-        """case_statement 내부의 statements만 처리"""
-        c = 0
-        skip = True
-        for child in case_node.children:
-            if child.type == ":":
-                skip = False
-                continue
-            if skip:
-                continue
-            c += self._visit(child, nesting)
-        return c
 
     # ── if / else if / else chain ──
 
-    def _handle_if_chain(self, if_node, nesting, is_first=True):
+    def _handle_if_chain(self, if_node, nesting, is_else_if):
         c = 0
-
-        if is_first:
+        if is_else_if:
+            c += 1
+            self._add_detail(if_node, "else if", 1, 0)
+        else:
             inc = 1 + nesting
             self._add_detail(if_node, "if", 1, nesting)
             c += inc
-        else:
-            c += 1
-            self._add_detail(if_node, "else if", 1, 0)
 
-        # condition
         cond = if_node.child_by_field_name("condition")
         if cond:
-            c += self._visit(cond, nesting)
+            c += self._visit_children(cond, nesting)
 
-        # §2.3.1: increases nesting level for consequence
         consequence = if_node.child_by_field_name("consequence")
         if consequence:
-            if consequence.type == "compound_statement":
-                c += self._visit_children(consequence, nesting + 1)
-            else:
-                c += self._visit(consequence, nesting + 1)
+            c += self._visit_children(consequence, nesting + 1)
 
-        # alternative
         alt = if_node.child_by_field_name("alternative")
-        if alt:
-            if alt.type == "else_clause":
-                c += self._handle_else_clause(alt, nesting)
-            elif alt.type == "if_statement":
-                c += self._handle_if_chain(alt, nesting, is_first=False)
-            elif alt.type == "compound_statement":
-                c += 1
-                self._add_detail(alt, "else", 1, 0)
-                c += self._visit_children(alt, nesting + 1)
-            else:
-                c += 1
-                self._add_detail(alt, "else", 1, 0)
-                c += self._visit(alt, nesting + 1)
-
+        if alt and alt.type == "else_clause":
+            for child in alt.children:
+                if child.type == "if_statement":
+                    c += self._handle_if_chain(child, nesting, is_else_if=True)
+                elif child.type == "compound_statement":
+                    c += 1
+                    self._add_detail(child, "else", 1, 0)
+                    c += self._visit_children(child, nesting + 1)
         return c
 
-    def _handle_else_clause(self, else_clause, nesting):
-        c = 0
-        for child in else_clause.children:
-            if child.type == "if_statement":
-                c += self._handle_if_chain(child, nesting, is_first=False)
-            elif child.type == "compound_statement":
-                c += 1
-                self._add_detail(else_clause, "else", 1, 0)
-                c += self._visit_children(child, nesting + 1)
-        return c
+    # ── Boolean operator sequences (B1 fundamental, p.7-8) ──
 
-    # ── Boolean operator sequences (§2.2) ──
-
-    def _handle_binary(self, node, nesting):
+    def _handle_boolean(self, node, nesting):
         ops = []
-        self._collect_logical_ops(node, ops)
-
+        self._collect_boolean_ops(node, ops)
         if not ops:
             return self._visit_children(node, nesting)
-
         c = 0
         prev = None
         for op in ops:
             if prev is None or op != prev:
                 c += 1
-                desc = f"logical sequence '{op}'" if prev is None else f"logical change to '{op}'"
+                desc = (f"logical sequence '{op}'" if prev is None
+                        else f"logical change to '{op}'")
                 self._add_detail_raw(desc, 1)
                 prev = op
         return c
 
-    def _collect_logical_ops(self, node, ops):
+    def _collect_boolean_ops(self, node, ops):
         if node.type != "binary_expression":
             return
         op_node = node.child_by_field_name("operator")
@@ -334,36 +412,27 @@ class CognitiveComplexityCalculator:
         op_text = self._text(op_node)
         if op_text not in ("&&", "||"):
             return
-
         left = node.child_by_field_name("left")
         right = node.child_by_field_name("right")
-
         if left and left.type == "binary_expression":
-            left_op = left.child_by_field_name("operator")
-            if left_op and self._text(left_op) in ("&&", "||"):
-                self._collect_logical_ops(left, ops)
-
+            lo = left.child_by_field_name("operator")
+            if lo and self._text(lo) in ("&&", "||"):
+                self._collect_boolean_ops(left, ops)
         ops.append(op_text)
-
         if right and right.type == "binary_expression":
-            right_op = right.child_by_field_name("operator")
-            if right_op and self._text(right_op) in ("&&", "||"):
-                self._collect_logical_ops(right, ops)
+            ro = right.child_by_field_name("operator")
+            if ro and self._text(ro) in ("&&", "||"):
+                self._collect_boolean_ops(right, ops)
 
 
 # ── Public API ──
 
 def calculate_file(filepath: str):
     with open(filepath, "r", encoding="utf-8") as f:
-        source = f.read()
-    calc = CognitiveComplexityCalculator(source)
-    return calc.calculate()
-
+        return CognitiveComplexityCalculator(f.read()).calculate()
 
 def calculate_source(source_code: str):
-    calc = CognitiveComplexityCalculator(source_code)
-    return calc.calculate()
-
+    return CognitiveComplexityCalculator(source_code).calculate()
 
 def calculate_directory(dirpath: str):
     all_results = []
@@ -380,7 +449,6 @@ def calculate_directory(dirpath: str):
                     print(f"Error processing {fpath}: {e}")
     return all_results
 
-
 def print_results(results, verbose=True):
     total = 0
     for r in results:
@@ -389,119 +457,26 @@ def print_results(results, verbose=True):
         fname = r.get("file", "")
         if fname:
             print(f"File: {fname}")
-        print(f"Function: {r['function']} (lines {r['start_line']}-{r['end_line']})")
+        print(f"Function: {r['function']} "
+              f"(lines {r['start_line']}-{r['end_line']})")
         print(f"Cognitive Complexity: {r['complexity']}")
         if verbose and r["details"]:
             print("Details:")
             for d in r["details"]:
                 print(d)
-
     print(f"\n{'='*60}")
     print(f"Total Cognitive Complexity: {total}")
     print(f"Number of functions: {len(results)}")
     if results:
         print(f"Average per function: {total / len(results):.1f}")
 
-
 if __name__ == "__main__":
-
-    test_code = '''
-int simple() {
-    int x = 10;
-    return x;
-}
-
-int sumOfPrimes(int max) {
-    int total = 0;
-    int i, j;
-    for (i = 1; i <= max; ++i) {
-        for (j = 2; j < i; ++j) {
-            if (i % j == 0) {
-                goto next;
-            }
-        }
-        total += i;
-        next:;
-    }
-    return total;
-}
-
-int getWords(int number) {
-    switch (number) {
-        case 1: return 1;
-        case 2: return 2;
-        default: return 0;
-    }
-}
-
-int complexExample(int a, int b, int c) {
-    if (a && b) {
-        int i;
-        for (i = 0; i < c; i++) {
-            if (i > 10) {
-                return i;
-            } else if (i > 5) {
-                continue;
-            } else {
-                printf("%d", i);
-            }
-        }
-    } else if (c > 0) {
-        switch (c) {
-            case 1: return 1;
-            default: return 0;
-        }
-    }
-    return 0;
-}
-
-int booleanLogic(int a, int b, int c, int d) {
-    if (a && b && c) {
-        return 1;
-    } else if (a || b || c) {
-        return 0;
-    } else if (a && b || c && d) {
-        return 1;
-    } else {
-        return 0;
-    }
-}
-
-int ternary(int flag) {
-    return flag ? 1 : 0;
-}
-
-void doWhile(int x) {
-    do {
-        x--;
-    } while (x > 0);
-}
-
-void whileLoop(int x) {
-    while (x > 0) {
-        x--;
-    }
-}
-'''
-
     print("C Cognitive Complexity Calculator")
-    print("Based on Campbell 2018 (ICSE TechDebt '18)")
-    print("https://doi.org/10.1145/3194164.3194186")
+    print("SonarSource Specification v1.7 (29 August 2023)")
     print("=" * 60)
-
-    results = calculate_source(test_code)
-    print_results(results, verbose=True)
-
-    # Non-code test
-    print("\n\n--- Non-code test ---")
-    log = 'Segmentation fault (core dumped)'
-    r2 = calculate_source(log)
-    print(f"Log text: functions={len(r2)}, complexity={sum(x['complexity'] for x in r2)}")
-
     if len(sys.argv) > 1:
         path = sys.argv[1]
         verbose = "-v" in sys.argv or "--verbose" in sys.argv
-
         if os.path.isdir(path):
             results = calculate_directory(path)
         elif os.path.isfile(path):
@@ -509,15 +484,9 @@ void whileLoop(int x) {
         else:
             print(f"Not found: {path}")
             sys.exit(1)
-
         if "--json" in sys.argv:
-            output = [{
-                "file": r.get("file", ""),
-                "function": r["function"],
-                "complexity": r["complexity"],
-                "start_line": r["start_line"],
-                "end_line": r["end_line"],
-            } for r in results]
-            print(json.dumps(output, indent=2))
+            print(json.dumps([{"file": r.get("file",""), "function": r["function"],
+                               "complexity": r["complexity"], "start_line": r["start_line"],
+                               "end_line": r["end_line"]} for r in results], indent=2))
         else:
             print_results(results, verbose)

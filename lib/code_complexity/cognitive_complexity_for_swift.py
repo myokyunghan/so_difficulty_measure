@@ -1,235 +1,488 @@
 """
 Swift Cognitive Complexity Calculator
-Based on Campbell 2018 (ICSE TechDebt '18)
+=======================================
+Based on:
+  - G. Ann Campbell. 2018. "Cognitive Complexity: An Overview and Evaluation."
+    TechDebt '18, ICSE, Gothenburg, Sweden.
+  - SonarSource. "Cognitive Complexity" v1.7, 29 August 2023.
+
+═══════════════════════════════════════════════════════════════════
+Specification (Appendix B, adapted for Swift)
+═══════════════════════════════════════════════════════════════════
+
+B1. Increments (+1 each)
+────────────────────────
+  Structural (B):  +1, receives nesting penalty, increases nesting level
+    - if                                  → Swift: if_statement
+    - switch                              → Swift: switch_statement (single +1, p.7)
+    - for-in                              → Swift: for_statement
+    - while                               → Swift: while_statement
+    - repeat-while (do-while equiv)       → Swift: repeat_while_statement
+    - do-catch (try-catch equiv)          → Swift: catch_block (+1 per catch, p.7)
+    - ternary operator                    → Swift: ternary_expression
+    - guard                               → Swift: guard_statement (like if, structural)
+
+  Hybrid (D):  +1, NO nesting penalty, but increases nesting level
+    - else if                             → Swift: if_statement as alternative of if_statement
+    - else                                → Swift: braced body as alternative of if_statement
+
+  Fundamental (C):  +1, NO nesting penalty, does NOT increase nesting level
+    - sequences of logical operators      → Swift: conjunction_expression (&&),
+                                                    disjunction_expression (||)
+    - each method in a recursion cycle    → Not implemented
+
+  Not applicable in Swift:
+    - goto, labeled break/continue        → Swift has no goto
+    - #if preprocessor                    → Swift #if exists but not in tree-sitter-swift AST
+
+B2. Nesting level
+────────────────────────────────────────────────────────────────────────
+    - if, else if, else, guard, ternary
+    - switch, for, while, repeat-while
+    - catch
+    - nested functions: lambda_literal (closure), nested function_declaration
+
+B3. Nesting increments (receive +nesting_level penalty)
+────────────────────────────────────────────────────────────────────────
+    - if, guard, ternary      (NOT else if, NOT else)
+    - switch, for, while, repeat-while
+    - catch
+
+═══════════════════════════════════════════════════════════════════
+Swift-specific notes
+═══════════════════════════════════════════════════════════════════
+
+  - do { } catch { }: Swift's try-catch equivalent. do block = no increment
+    (like try, p.7). Each catch_block = +1 structural.
+  - guard: treated like if (structural increment + nesting penalty).
+    The else clause of guard is mandatory but doesn't get additional +1.
+  - Swift logical operators: && → conjunction_expression, || → disjunction_expression
+    (separate AST node types, not binary_expression)
+  - Closures (lambda_literal): no structural increment, increases nesting (p.9)
+  - Nested functions: function_declaration inside another function body,
+    no structural increment, increases nesting (p.9)
+
 Dependencies: pip install tree-sitter tree-sitter-swift
 """
 import os
+import re
+import sys
+import json
 from tree_sitter import Language, Parser
 
+
 def create_parser():
-    """tree-sitter-language-pack 우선, 개별 패키지 fallback"""
-    # 1. tree-sitter-language-pack
     try:
         from tree_sitter_language_pack import get_parser
         return get_parser("swift")
     except Exception:
         pass
-    # 2. 개별 패키지
     try:
         import tree_sitter_swift as _mod
         return Parser(Language(_mod.language()))
     except ImportError:
         raise ImportError(
-            "Install one of:\n"
-            "  pip install tree-sitter-language-pack\n"
-            "  pip install tree-sitter-swift")
+            "Install: pip install tree-sitter-swift")
 
 
 class CognitiveComplexityCalculator:
-    def __init__(self, src):
-        self.src = src; self.p = create_parser()
-        self.tree = self.p.parse(bytes(src, "utf-8"))
-        self.results = []; self.details = []
 
-    def _t(self, n): return "" if n is None else self.src[n.start_byte:n.end_byte]
-    def _l(self, n): return n.start_point[0]+1
-    def _a(self, n, k, s, ne):
-        l=self._l(n); t=s+ne
-        self.details.append(f"  Line {l:>4}: +{t} ({k}: +{s} structural, +{ne} nesting)" if ne else f"  Line {l:>4}: +{t} ({k})")
-    def _ar(self, d, i): self.details.append(f"          +{i} ({d})")
+    def __init__(self, source_code: str):
+        self.source_code = source_code
+        self.parser = create_parser()
+        self.tree = self.parser.parse(bytes(source_code, "utf-8"))
+        self.results = []
+        self.details = []
+
+    def _text(self, node):
+        if node is None:
+            return ""
+        return self.source_code[node.start_byte:node.end_byte]
+
+    def _line(self, node):
+        return node.start_point[0] + 1
+
+    def _add_detail(self, node, kind, structural, nesting):
+        line = self._line(node)
+        total = structural + nesting
+        if nesting > 0:
+            self.details.append(
+                f"  Line {line:>4}: +{total} ({kind}: "
+                f"+{structural} structural, +{nesting} nesting)")
+        else:
+            self.details.append(f"  Line {line:>4}: +{total} ({kind})")
+
+    def _add_detail_raw(self, description, increment):
+        self.details.append(f"          +{increment} ({description})")
+
+    # ── Top-level traversal ──
 
     def calculate(self):
         self.results = []
-        self._walk(self.tree.root_node)
+        self._walk_top_level(self.tree.root_node)
+
+        # Bare code fallback
+        if not self.results:
+            wrapped = "func __top__() {\n" + self.source_code + "\n}"
+            try:
+                tree2 = self.parser.parse(bytes(wrapped, "utf-8"))
+                if not tree2.root_node.has_error:
+                    orig_src, orig_tree = self.source_code, self.tree
+                    self.source_code = wrapped
+                    self.tree = tree2
+                    self.results = []
+                    self._walk_top_level(tree2.root_node)
+                    self.source_code = orig_src
+                    self.tree = orig_tree
+                    for r in self.results:
+                        r["function"] = "<top-level>"
+                        r["start_line"] = max(1, r["start_line"] - 1)
+                        r["end_line"] = max(1, r["end_line"] - 1)
+                        r["details"] = [
+                            re.sub(r"  Line\s+(\d+):",
+                                   lambda m: f"  Line {max(1, int(m.group(1))-1):>4}:", d)
+                            if d.startswith("  Line ") else d
+                            for d in r["details"]
+                        ]
+            except Exception:
+                pass
         return self.results
 
-    def _walk(self, node):
-        for ch in node.children:
-            if ch.type == "function_declaration": self._proc(ch)
-            elif ch.type in ("class_declaration", "struct_declaration", "extension_declaration", "protocol_declaration"):
-                self._wcls(ch)
+    def _walk_top_level(self, node):
+        for child in node.children:
+            if child.type == "function_declaration":
+                self._process_function(child)
+            elif child.type in ("class_declaration", "struct_declaration",
+                                "enum_declaration", "protocol_declaration",
+                                "extension_declaration"):
+                self._walk_class(child)
 
-    def _wcls(self, node):
-        body = node.child_by_field_name("body")
+    def _walk_class(self, class_node):
+        body = class_node.child_by_field_name("body")
         if body is None:
-            for ch in node.children:
-                if ch.type in ("class_body", "statements"): body = ch; break
-        if body is None: return
-        for ch in body.children:
-            if ch.type == "function_declaration": self._proc(ch)
-            elif ch.type in ("class_declaration", "struct_declaration"): self._wcls(ch)
+            return
+        for child in body.children:
+            if child.type == "function_declaration":
+                self._process_function(child)
+            elif child.type in ("class_declaration", "struct_declaration",
+                                "enum_declaration", "extension_declaration"):
+                self._walk_class(child)
 
-    def _proc(self, fn):
-        nn = fn.child_by_field_name("name")
-        name = self._t(nn) if nn else None
-        if not name:
-            for ch in fn.children:
-                if ch.type in ("simple_identifier",): name = self._t(ch); break
-        if not name: name = "<anon>"
+    def _process_function(self, func_node):
+        name_node = func_node.child_by_field_name("name")
+        func_name = self._text(name_node) if name_node else "<anonymous>"
         self.details = []
-        body = fn.child_by_field_name("body")
-        c = 0
+        body = func_node.child_by_field_name("body")
+        complexity = 0
         if body:
-            # function_body: { statements }
-            for ch in body.children:
-                if ch.type == "statements": c += self._vc(ch, 0)
-        self.results.append({"function": name, "complexity": c,
-            "start_line": fn.start_point[0]+1, "end_line": fn.end_point[0]+1,
-            "details": list(self.details)})
+            complexity = self._visit_children(body, 0)
+        self.results.append({
+            "function": func_name,
+            "complexity": complexity,
+            "start_line": func_node.start_point[0] + 1,
+            "end_line": func_node.end_point[0] + 1,
+            "details": list(self.details),
+        })
 
-    def _vc(self, n, ne):
-        t = 0
-        for ch in n.children: t += self._v(ch, ne)
-        return t
+    # ── Node visitors ──
 
-    def _v(self, n, ne):
-        t = n.type
+    def _visit_children(self, node, nesting):
+        total = 0
+        for child in node.children:
+            total += self._visit(child, nesting)
+        return total
 
-        if t == "if_statement": return self._hif(n, ne, True)
+    def _visit(self, node, nesting):
+        t = node.type
 
+        # ── B1 structural: if ──
+        if t == "if_statement":
+            return self._handle_if_chain(node, nesting, is_else_if=False)
+
+        # ── B1 structural: guard (like if) ──
+        if t == "guard_statement":
+            inc = 1 + nesting
+            self._add_detail(node, "guard", 1, nesting)
+            c = inc
+            # Visit condition for logical operators
+            cond = node.child_by_field_name("condition")
+            if cond:
+                c += self._visit(cond, nesting)
+            # Visit else body (mandatory in guard)
+            for child in node.children:
+                if child.type in ("statements", "{", "}", "guard", "else"):
+                    continue
+                if child == cond:
+                    continue
+                c += self._visit(child, nesting + 1)
+            return c
+
+        # ── B1 structural: for ──
         if t == "for_statement":
-            self._a(n, "for", 1, ne); c = 1 + ne
-            # body is {statements}
-            for ch in n.children:
-                if ch.type == "statements": c += self._vc(ch, ne+1)
+            inc = 1 + nesting
+            self._add_detail(node, "for", 1, nesting)
+            c = inc
+            # Visit body (statements between { })
+            for child in node.children:
+                if child.type == "statements":
+                    c += self._visit_children(child, nesting + 1)
             return c
 
+        # ── B1 structural: while ──
         if t == "while_statement":
-            self._a(n, "while", 1, ne); c = 1 + ne
-            cond = n.child_by_field_name("condition")
-            if cond: c += self._v(cond, ne)
-            for ch in n.children:
-                if ch.type == "statements": c += self._vc(ch, ne+1)
+            inc = 1 + nesting
+            self._add_detail(node, "while", 1, nesting)
+            c = inc
+            cond = node.child_by_field_name("condition")
+            if cond:
+                c += self._visit(cond, nesting)
+            for child in node.children:
+                if child.type == "statements":
+                    c += self._visit_children(child, nesting + 1)
             return c
 
+        # ── B1 structural: repeat-while (do-while equivalent) ──
         if t == "repeat_while_statement":
-            self._a(n, "repeat-while", 1, ne); c = 1 + ne
-            for ch in n.children:
-                if ch.type == "statements": c += self._vc(ch, ne+1)
+            inc = 1 + nesting
+            self._add_detail(node, "repeat-while", 1, nesting)
+            c = inc
+            cond = node.child_by_field_name("condition")
+            if cond:
+                c += self._visit(cond, nesting)
+            for child in node.children:
+                if child.type == "statements":
+                    c += self._visit_children(child, nesting + 1)
             return c
 
+        # ── B1 structural: switch (single +1, p.7) ──
         if t == "switch_statement":
-            self._a(n, "switch", 1, ne); c = 1 + ne
-            for ch in n.children:
-                if ch.type == "switch_entry":
-                    for sub in ch.children:
-                        if sub.type == "statements": c += self._vc(sub, ne+1)
+            inc = 1 + nesting
+            self._add_detail(node, "switch", 1, nesting)
+            c = inc
+            for child in node.children:
+                if child.type == "switch_entry":
+                    # No additional increment for case/default
+                    for sub in child.children:
+                        if sub.type == "statements":
+                            c += self._visit_children(sub, nesting + 1)
             return c
 
+        # ── do-catch: do block = no increment (like try, p.7) ──
         if t == "do_statement":
-            # Swift do-catch (try)
-            return self._vc(n, ne)
-
-        if t == "catch_block":
-            self._a(n, "catch", 1, ne); c = 1 + ne
-            for ch in n.children:
-                if ch.type == "statements": c += self._vc(ch, ne+1)
-            return c
-
-        if t == "ternary_expression":
-            self._a(n, "ternary", 1, ne); c = 1 + ne
-            cond = n.child_by_field_name("condition")
-            if cond: c += self._v(cond, ne)
-            it = n.child_by_field_name("if_true")
-            if it: c += self._v(it, ne+1)
-            iff = n.child_by_field_name("if_false")
-            if iff: c += self._v(iff, ne+1)
-            return c
-
-        if t == "conjunction_expression":
-            return self._handle_conj_disj(n, ne, "&&")
-
-        if t == "disjunction_expression":
-            return self._handle_conj_disj(n, ne, "||")
-
-        if t in ("closure_expression",):
             c = 0
-            for ch in n.children:
-                if ch.type == "statements": c += self._vc(ch, ne+1)
+            for child in node.children:
+                if child.type == "catch_block":
+                    c += self._handle_catch(child, nesting)
+                elif child.type == "statements":
+                    c += self._visit_children(child, nesting)
+                elif child.type not in ("do", "{", "}"):
+                    c += self._visit(child, nesting)
             return c
 
-        return self._vc(n, ne)
+        # ── B1 structural: ternary ──
+        if t == "ternary_expression":
+            inc = 1 + nesting
+            self._add_detail(node, "ternary", 1, nesting)
+            c = inc
+            cond = node.child_by_field_name("condition")
+            if cond:
+                c += self._visit(cond, nesting)
+            if_true = node.child_by_field_name("if_true")
+            if if_true:
+                c += self._visit(if_true, nesting + 1)
+            if_false = node.child_by_field_name("if_false")
+            if if_false:
+                c += self._visit(if_false, nesting + 1)
+            return c
 
-    def _hif(self, n, ne, first):
+        # ── B1 fundamental: logical operators ──
+        if t in ("conjunction_expression", "disjunction_expression"):
+            return self._handle_boolean(node, nesting)
+
+        # ── B2: lambda_literal (closure) → nesting (p.9) ──
+        if t == "lambda_literal":
+            c = 0
+            for child in node.children:
+                if child.type == "statements":
+                    c += self._visit_children(child, nesting + 1)
+            return c
+
+        # ── B2: nested function_declaration → nesting (p.9) ──
+        if t == "function_declaration":
+            c = 0
+            body = node.child_by_field_name("body")
+            if body:
+                c += self._visit_children(body, nesting + 1)
+            return c
+
+        # ── default: recurse ──
+        return self._visit_children(node, nesting)
+
+    # ── if / else if / else chain ──
+
+    def _handle_if_chain(self, if_node, nesting, is_else_if):
         c = 0
-        if first: c += 1 + ne; self._a(n, "if", 1, ne)
-        else: c += 1; self._a(n, "else if", 1, 0)
+        if is_else_if:
+            c += 1
+            self._add_detail(if_node, "else if", 1, 0)
+        else:
+            inc = 1 + nesting
+            self._add_detail(if_node, "if", 1, nesting)
+            c += inc
 
-        cond = n.child_by_field_name("condition")
-        if cond: c += self._v(cond, ne)
+        # condition
+        cond = if_node.child_by_field_name("condition")
+        if cond:
+            c += self._visit(cond, nesting)
 
-        # Children: if, cond, {, statements, }, [else, if_statement/{...}]
-        saw_body = False; saw_else = False
-        for ch in n.children:
-            if ch.type == "statements" and not saw_else:
-                c += self._vc(ch, ne+1); saw_body = True
-            elif ch.type == "else":
-                saw_else = True
-            elif saw_else:
-                if ch.type == "if_statement":
-                    c += self._hif(ch, ne, False)
-                elif ch.type == "statements":
-                    c += 1; self._a(ch, "else", 1, 0); c += self._vc(ch, ne+1)
-                elif ch.type == "{":
-                    pass
-                elif ch.type == "}":
-                    pass
-                else:
-                    pass
-                saw_else = False
+        # Walk children: before 'else' = consequence, after 'else' = alternative
+        children = list(if_node.children)
+        else_idx = None
+        for i, child in enumerate(children):
+            if child.type == "else":
+                else_idx = i
+                break
+
+        # Consequence: statements before else
+        for child in children[:else_idx] if else_idx else children:
+            if child.type == "statements":
+                c += self._visit_children(child, nesting + 1)
+
+        # Alternative: after else keyword
+        if else_idx is not None:
+            after_else = children[else_idx + 1:]
+            for child in after_else:
+                if child.type == "if_statement":
+                    c += self._handle_if_chain(child, nesting, is_else_if=True)
+                    break
+                elif child.type == "statements":
+                    c += 1
+                    self._add_detail(child, "else", 1, 0)
+                    c += self._visit_children(child, nesting + 1)
+                    break
+            else:
+                # Empty else block (no statements node): just +1 for else
+                has_braces = any(ch.type == "{" for ch in after_else)
+                if has_braces:
+                    c += 1
+                    # Find a node for line number
+                    for ch in after_else:
+                        if ch.type == "{":
+                            self._add_detail(ch, "else", 1, 0)
+                            break
+
         return c
 
-    def _handle_conj_disj(self, n, ne, op_char):
+    # ── catch handler ──
+
+    def _handle_catch(self, catch_node, nesting):
+        inc = 1 + nesting
+        self._add_detail(catch_node, "catch", 1, nesting)
+        c = inc
+        for child in catch_node.children:
+            if child.type == "statements":
+                c += self._visit_children(child, nesting + 1)
+        return c
+
+    # ── Logical operator sequences (p.7-8) ──
+
+    def _handle_boolean(self, node, nesting):
         ops = []
-        self._collect_conj_disj(n, ops)
-        if not ops: return self._vc(n, ne)
-        c = 0; prev = None
+        self._collect_boolean_ops(node, ops)
+        if not ops:
+            return self._visit_children(node, nesting)
+        c = 0
+        prev = None
         for op in ops:
             if prev is None or op != prev:
                 c += 1
-                self._ar(f"logical sequence '{op}'" if prev is None else f"logical change to '{op}'", 1)
+                desc = (f"logical sequence '{op}'" if prev is None
+                        else f"logical change to '{op}'")
+                self._add_detail_raw(desc, 1)
                 prev = op
         return c
 
-    def _collect_conj_disj(self, n, ops):
-        if n.type == "conjunction_expression":
-            lhs = n.child_by_field_name("lhs")
+    def _collect_boolean_ops(self, node, ops):
+        if node.type == "conjunction_expression":
+            lhs = node.child_by_field_name("lhs")
+            rhs = node.child_by_field_name("rhs")
             if lhs and lhs.type in ("conjunction_expression", "disjunction_expression"):
-                self._collect_conj_disj(lhs, ops)
+                self._collect_boolean_ops(lhs, ops)
             ops.append("&&")
-            rhs = n.child_by_field_name("rhs")
             if rhs and rhs.type in ("conjunction_expression", "disjunction_expression"):
-                self._collect_conj_disj(rhs, ops)
-        elif n.type == "disjunction_expression":
-            lhs = n.child_by_field_name("lhs")
+                self._collect_boolean_ops(rhs, ops)
+        elif node.type == "disjunction_expression":
+            lhs = node.child_by_field_name("lhs")
+            rhs = node.child_by_field_name("rhs")
             if lhs and lhs.type in ("conjunction_expression", "disjunction_expression"):
-                self._collect_conj_disj(lhs, ops)
+                self._collect_boolean_ops(lhs, ops)
             ops.append("||")
-            rhs = n.child_by_field_name("rhs")
             if rhs and rhs.type in ("conjunction_expression", "disjunction_expression"):
-                self._collect_conj_disj(rhs, ops)
+                self._collect_boolean_ops(rhs, ops)
 
 
-def calculate_file(fp):
-    with open(fp, "r", encoding="utf-8") as f: return CognitiveComplexityCalculator(f.read()).calculate()
-def calculate_source(code): return CognitiveComplexityCalculator(code).calculate()
-def calculate_directory(d):
-    r = []
-    for root, _, files in os.walk(d):
-        for f in sorted(files):
-            if f.endswith(".swift"):
-                p = os.path.join(root, f)
-                try: res = calculate_file(p); [x.update(file=p) for x in res]; r.extend(res)
-                except Exception as e: print(f"Error {p}: {e}")
-    return r
+# ── Public API ──
+
+def calculate_file(filepath: str):
+    with open(filepath, "r", encoding="utf-8") as f:
+        return CognitiveComplexityCalculator(f.read()).calculate()
+
+def calculate_source(source_code: str):
+    return CognitiveComplexityCalculator(source_code).calculate()
+
+def calculate_directory(dirpath: str):
+    all_results = []
+    for root, dirs, files in os.walk(dirpath):
+        for fname in sorted(files):
+            if fname.endswith(".swift"):
+                fpath = os.path.join(root, fname)
+                try:
+                    results = calculate_file(fpath)
+                    for r in results:
+                        r["file"] = fpath
+                    all_results.extend(results)
+                except Exception as e:
+                    print(f"Error processing {fpath}: {e}")
+    return all_results
+
 def print_results(results, verbose=True):
-    total = sum(r["complexity"] for r in results)
+    total = 0
     for r in results:
+        total += r["complexity"]
         print(f"\n{'='*60}")
-        if r.get("file"): print(f"File: {r['file']}")
-        print(f"Function: {r['function']} (lines {r['start_line']}-{r['end_line']})")
+        fname = r.get("file", "")
+        if fname:
+            print(f"File: {fname}")
+        print(f"Function: {r['function']} "
+              f"(lines {r['start_line']}-{r['end_line']})")
         print(f"Cognitive Complexity: {r['complexity']}")
-        if verbose:
-            for d in r.get("details", []): print(d)
-    print(f"\n{'='*60}\nTotal: {total}, Functions: {len(results)}")
-    if results: print(f"Average: {total/len(results):.1f}")
+        if verbose and r["details"]:
+            print("Details:")
+            for d in r["details"]:
+                print(d)
+    print(f"\n{'='*60}")
+    print(f"Total Cognitive Complexity: {total}")
+    print(f"Number of functions: {len(results)}")
+    if results:
+        print(f"Average per function: {total / len(results):.1f}")
+
+if __name__ == "__main__":
+    print("Swift Cognitive Complexity Calculator")
+    print("SonarSource Specification v1.7 (29 August 2023)")
+    print("=" * 60)
+    if len(sys.argv) > 1:
+        path = sys.argv[1]
+        verbose = "-v" in sys.argv or "--verbose" in sys.argv
+        if os.path.isdir(path):
+            results = calculate_directory(path)
+        elif os.path.isfile(path):
+            results = calculate_file(path)
+        else:
+            print(f"Not found: {path}")
+            sys.exit(1)
+        if "--json" in sys.argv:
+            print(json.dumps([{"file": r.get("file",""), "function": r["function"],
+                               "complexity": r["complexity"], "start_line": r["start_line"],
+                               "end_line": r["end_line"]} for r in results], indent=2))
+        else:
+            print_results(results, verbose)

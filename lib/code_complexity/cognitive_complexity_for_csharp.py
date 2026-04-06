@@ -1,51 +1,100 @@
 """
 C# Cognitive Complexity Calculator
 ====================================
-Based on: G. Ann Campbell. 2018. "Cognitive Complexity: An Overview and
-Evaluation." In TechDebt '18, ICSE, Gothenburg, Sweden.
-https://doi.org/10.1145/3194164.3194186
+Based on:
+  - G. Ann Campbell. 2018. "Cognitive Complexity: An Overview and Evaluation."
+    TechDebt '18, ICSE, Gothenburg, Sweden.
+    https://doi.org/10.1145/3194164.3194186
+  - SonarSource. "Cognitive Complexity - a new way of measuring understandability."
+    Version 1.7, 29 August 2023.
+    https://www.sonarsource.com/docs/CognitiveComplexity.pdf
 
-Rules (Section 2 of the paper):
+═══════════════════════════════════════════════════════════════════
+Specification (Appendix B of the SonarSource white paper v1.7)
+═══════════════════════════════════════════════════════════════════
 
-  2.1 Ignore readable shorthand structures
-      - No increment for the method/class itself
-      - No increment for null-coalescing (?., ??)
+B1. Increments (+1 each)
+────────────────────────
+  Structural (B):  +1, receives nesting penalty, increases nesting level
+    - if                                  → C#: if_statement
+    - switch                              → C#: switch_statement (single +1 for entire switch, p.7)
+    - for, foreach                        → C#: for_statement, foreach_statement
+    - while, do while                     → C#: while_statement, do_statement
+    - catch                               → C#: catch_clause (single +1 regardless of type, p.7)
+    - ternary operator                    → C#: conditional_expression (a ? b : c)
 
-  2.2 Structural increment (+1):
-      - if, else if, else                          (§2.2)
-      - switch                                     (§2.2)
-      - for, foreach, while, do...while            (§2.2)
-      - catch                                      (§2.2)
-      - ternary (? :)                              (§2.2)
-      - goto                                       (§2.2)
-      - sequences of like binary logical operators  (§2.2)
+  Hybrid (D):  +1, NO nesting penalty, but increases nesting level
+    - else if                             → C#: if_statement as alternative of if_statement
+    - else                                → C#: block as alternative of if_statement
 
-  2.3 Nesting:
-    2.3.1 Increment nesting level:
-      - if, else if, else, switch, ternary         (§2.3.1)
-      - for, foreach, while, do...while            (§2.3.1)
-      - catch                                      (§2.3.1)
-      - nested methods: lambda                     (§2.3.1)
+  Fundamental (C):  +1, NO nesting penalty, does NOT increase nesting level
+    - goto                                → C#: goto_statement
+    - sequences of binary logical ops     → C#: binary_expression with && / ||
+    - each method in a recursion cycle    → Not implemented (requires call graph)
 
-    2.3.2 Receive nesting increment (+nesting_level):
-      - if, switch, ternary                        (§2.3.2, NOT else if/else)
-      - for, foreach, while, do...while            (§2.3.2)
-      - catch                                      (§2.3.2)
+  Ignored (Ignore shorthand, p.6):
+    - null-coalescing operators (??, ?.)  → No increment
+
+B2. Nesting level (these structures increase nesting for their children)
+────────────────────────────────────────────────────────────────────────
+    - if, else if, else, ternary operator
+    - switch
+    - for, foreach, while, do while
+    - catch
+    - nested methods: lambda_expression, anonymous_method_expression,
+      local_function_statement
+
+B3. Nesting increments (these structures RECEIVE +nesting_level penalty)
+────────────────────────────────────────────────────────────────────────
+    - if, ternary operator       (NOT else if, NOT else)
+    - switch
+    - for, foreach, while, do while
+    - catch
+
+═══════════════════════════════════════════════════════════════════
+Additional rules from the white paper
+═══════════════════════════════════════════════════════════════════
+
+  - try and finally: no increment, no nesting level change (p.7)
+  - switch: entire switch + all cases = single structural increment (p.7)
+  - catch: single +1 regardless of exception types (p.7)
+  - goto: +1 fundamental (p.8)
+  - Null-coalescing (??, ?.): ignored (p.6, "Ignore shorthand")
+  - Early return: no increment (p.8)
+
+═══════════════════════════════════════════════════════════════════
+Extension: Bare code fallback
+═══════════════════════════════════════════════════════════════════
+
+  For Stack Overflow snippets without class/method declarations:
+    1. Calculator first searches for method declarations in the AST.
+    2. If none found, wraps the source in a dummy method and re-parses.
+    3. Result is labeled as <top-level> with adjusted line numbers.
 
 Dependencies: pip install tree-sitter tree-sitter-c-sharp
 """
 import os
+import re
 import sys
 import json
 from tree_sitter import Language, Parser
 
+
 def create_parser():
-    """개별 패키지로 파서 생성"""
+    """tree-sitter-language-pack 우선, 개별 패키지 fallback"""
+    try:
+        from tree_sitter_language_pack import get_parser
+        return get_parser("c_sharp")
+    except Exception:
+        pass
     try:
         import tree_sitter_c_sharp as _mod
         return Parser(Language(_mod.language()))
     except ImportError:
-        raise ImportError("Install: pip install tree-sitter-c-sharp")
+        raise ImportError(
+            "Install one of:\n"
+            "  pip install tree-sitter-language-pack\n"
+            "  pip install tree-sitter-c-sharp")
 
 
 class CognitiveComplexityCalculator:
@@ -56,6 +105,8 @@ class CognitiveComplexityCalculator:
         self.tree = self.parser.parse(bytes(source_code, "utf-8"))
         self.results = []
         self.details = []
+
+    # ── Helpers ──
 
     def _text(self, node):
         if node is None:
@@ -70,27 +121,52 @@ class CognitiveComplexityCalculator:
         total = structural + nesting
         if nesting > 0:
             self.details.append(
-                f"  Line {line:>4}: +{total} ({kind}: +{structural} structural, +{nesting} nesting)"
-            )
+                f"  Line {line:>4}: +{total} ({kind}: "
+                f"+{structural} structural, +{nesting} nesting)")
         else:
             self.details.append(f"  Line {line:>4}: +{total} ({kind})")
 
     def _add_detail_raw(self, description, increment):
         self.details.append(f"          +{increment} ({description})")
 
-    # ── Top-level traversal (recursion-safe) ──
+    # ── Top-level traversal ──
 
     def calculate(self):
         self.results = []
         self._walk_top_level(self.tree.root_node)
+
+        # Bare code fallback
+        if not self.results:
+            wrapped = "class __Top__ { void __top__() {\n" + self.source_code + "\n}}"
+            try:
+                tree2 = self.parser.parse(bytes(wrapped, "utf-8"))
+                if not tree2.root_node.has_error:
+                    orig_src, orig_tree = self.source_code, self.tree
+                    self.source_code = wrapped
+                    self.tree = tree2
+                    self.results = []
+                    self._walk_top_level(tree2.root_node)
+                    self.source_code = orig_src
+                    self.tree = orig_tree
+                    for r in self.results:
+                        r["function"] = "<top-level>"
+                        r["start_line"] = max(1, r["start_line"] - 1)
+                        r["end_line"] = max(1, r["end_line"] - 1)
+                        r["details"] = [
+                            re.sub(r"  Line\s+(\d+):",
+                                   lambda m: f"  Line {max(1, int(m.group(1))-1):>4}:", d)
+                            if d.startswith("  Line ") else d
+                            for d in r["details"]
+                        ]
+            except Exception:
+                pass
         return self.results
 
     def _walk_top_level(self, node):
-        """최상위에서 클래스/구조체/인터페이스를 찾음."""
         for child in node.children:
             if child.type in ("class_declaration", "struct_declaration",
-                              "interface_declaration", "enum_declaration",
-                              "record_declaration"):
+                              "interface_declaration", "record_declaration",
+                              "enum_declaration"):
                 self._walk_class(child)
             elif child.type == "namespace_declaration":
                 body = child.child_by_field_name("body")
@@ -98,6 +174,12 @@ class CognitiveComplexityCalculator:
                     self._walk_top_level(body)
             elif child.type == "file_scoped_namespace_declaration":
                 self._walk_top_level(child)
+            elif child.type in ("method_declaration", "constructor_declaration"):
+                self._process_function(child)
+            elif child.type == "global_statement":
+                for sub in child.children:
+                    if sub.type == "local_function_statement":
+                        self._process_function(sub)
 
     def _walk_class(self, class_node):
         body = class_node.child_by_field_name("body")
@@ -105,10 +187,9 @@ class CognitiveComplexityCalculator:
             return
         for child in body.children:
             if child.type in ("method_declaration", "constructor_declaration"):
-                self._process_method(child)
+                self._process_function(child)
             elif child.type in ("class_declaration", "struct_declaration",
-                                "interface_declaration", "enum_declaration",
-                                "record_declaration"):
+                                "interface_declaration", "record_declaration"):
                 self._walk_class(child)
             elif child.type == "property_declaration":
                 # property accessors (get/set with bodies)
@@ -116,18 +197,14 @@ class CognitiveComplexityCalculator:
                     if sub.type == "accessor_list":
                         for acc in sub.children:
                             if acc.type == "accessor_declaration":
-                                acc_body = acc.child_by_field_name("body")
-                                if acc_body and acc_body.child_count > 2:
-                                    # Non-trivial accessor
-                                    pass  # Skip property accessors for now
+                                self._process_function(acc)
 
-    def _process_method(self, method_node):
-        """§2.1: 메서드 자체에는 increment 없음"""
-        name_node = method_node.child_by_field_name("name")
+    def _process_function(self, func_node):
+        name_node = func_node.child_by_field_name("name")
         func_name = self._text(name_node) if name_node else "<anonymous>"
 
         self.details = []
-        body = method_node.child_by_field_name("body")
+        body = func_node.child_by_field_name("body")
         complexity = 0
         if body:
             complexity = self._visit_children(body, 0)
@@ -135,8 +212,8 @@ class CognitiveComplexityCalculator:
         self.results.append({
             "function": func_name,
             "complexity": complexity,
-            "start_line": method_node.start_point[0] + 1,
-            "end_line": method_node.end_point[0] + 1,
+            "start_line": func_node.start_point[0] + 1,
+            "end_line": func_node.end_point[0] + 1,
             "details": list(self.details),
         })
 
@@ -151,44 +228,22 @@ class CognitiveComplexityCalculator:
     def _visit(self, node, nesting):
         t = node.type
 
-        # §2.2, §2.3.2: if → +1 structural, +nesting penalty
+        # ── B1 structural: if ──
         if t == "if_statement":
-            return self._handle_if_chain(node, nesting, is_first=True)
+            return self._handle_if_chain(node, nesting, is_else_if=False)
 
-        # §2.2: switch → +1 structural
-        # §2.3.2: switch → receives nesting increment
-        if t == "switch_statement":
+        # ── B1 structural: for / foreach ──
+        if t in ("for_statement", "foreach_statement"):
+            kw = "for" if t == "for_statement" else "foreach"
             inc = 1 + nesting
-            self._add_detail(node, "switch", 1, nesting)
-            c = inc
-            body = node.child_by_field_name("body")
-            if body:
-                for child in body.children:
-                    if child.type == "switch_section":
-                        c += self._visit_switch_section(child, nesting + 1)
-            return c
-
-        # §2.2: for → +1 structural
-        if t == "for_statement":
-            inc = 1 + nesting
-            self._add_detail(node, "for", 1, nesting)
+            self._add_detail(node, kw, 1, nesting)
             c = inc
             body = node.child_by_field_name("body")
             if body:
                 c += self._visit_children(body, nesting + 1)
             return c
 
-        # §2.2: foreach → +1 structural
-        if t == "foreach_statement":
-            inc = 1 + nesting
-            self._add_detail(node, "foreach", 1, nesting)
-            c = inc
-            body = node.child_by_field_name("body")
-            if body:
-                c += self._visit_children(body, nesting + 1)
-            return c
-
-        # §2.2: while → +1 structural
+        # ── B1 structural: while ──
         if t == "while_statement":
             inc = 1 + nesting
             self._add_detail(node, "while", 1, nesting)
@@ -201,7 +256,7 @@ class CognitiveComplexityCalculator:
                 c += self._visit_children(body, nesting + 1)
             return c
 
-        # §2.2: do...while → +1 structural
+        # ── B1 structural: do-while ──
         if t == "do_statement":
             inc = 1 + nesting
             self._add_detail(node, "do-while", 1, nesting)
@@ -214,13 +269,27 @@ class CognitiveComplexityCalculator:
                 c += self._visit_children(body, nesting + 1)
             return c
 
-        # §2.2: catch → +1 structural (try: no increment)
+        # ── B1 structural: switch (single +1, p.7) ──
+        if t == "switch_statement":
+            inc = 1 + nesting
+            self._add_detail(node, "switch", 1, nesting)
+            c = inc
+            body = node.child_by_field_name("body")
+            if body:
+                for child in body.children:
+                    if child.type == "switch_section":
+                        # No additional increment for case/default labels
+                        c += self._visit_children(child, nesting + 1)
+            return c
+
+        # ── try: no increment, no nesting change (p.7) ──
         if t == "try_statement":
             c = 0
             for child in node.children:
                 c += self._visit(child, nesting)
             return c
 
+        # ── B1 structural: catch → +1 (p.7) ──
         if t == "catch_clause":
             inc = 1 + nesting
             self._add_detail(node, "catch", 1, nesting)
@@ -230,16 +299,14 @@ class CognitiveComplexityCalculator:
                 c += self._visit_children(body, nesting + 1)
             return c
 
-        # finally: no increment
+        # ── finally: no increment, no nesting change (p.7) ──
         if t == "finally_clause":
-            c = 0
-            body = node.child_by_field_name("body")
-            if body:
-                c += self._visit_children(body, nesting)
-            return c
+            for child in node.children:
+                if child.type == "block":
+                    return self._visit_children(child, nesting)
+            return 0
 
-        # §2.2: ternary → +1 structural
-        # §2.3.2: ternary → receives nesting increment
+        # ── B1 structural: ternary (conditional_expression) ──
         if t == "conditional_expression":
             inc = 1 + nesting
             self._add_detail(node, "ternary", 1, nesting)
@@ -247,120 +314,111 @@ class CognitiveComplexityCalculator:
             cond = node.child_by_field_name("condition")
             if cond:
                 c += self._visit(cond, nesting)
-            cons = node.child_by_field_name("consequence")
-            if cons:
-                c += self._visit(cons, nesting + 1)
+            consequence = node.child_by_field_name("consequence")
+            if consequence:
+                c += self._visit(consequence, nesting + 1)
             alt = node.child_by_field_name("alternative")
             if alt:
                 c += self._visit(alt, nesting + 1)
             return c
 
-        # §2.2: goto → +1 structural
+        # ── B1 fundamental: logical operators (p.7-8) ──
+        if t == "binary_expression":
+            op = node.child_by_field_name("operator")
+            if op and self._text(op) in ("&&", "||"):
+                return self._handle_boolean(node, nesting)
+            return self._visit_children(node, nesting)
+
+        # ── B1 fundamental: goto (p.8) ──
         if t == "goto_statement":
             self._add_detail(node, "goto", 1, 0)
             return 1
 
-        # labeled_statement: label 자체는 increment 없음
-        if t == "labeled_statement":
-            c = 0
-            for child in node.children:
-                if child.type not in ("identifier", ":"):
-                    c += self._visit(child, nesting)
-            return c
-
-        # §2.2: sequences of like binary logical operators
-        if t == "binary_expression":
-            return self._handle_binary(node, nesting)
-
-        # §2.3.1: lambda → increment nesting level
+        # ── B2: lambda_expression → no increment, increases nesting (p.9) ──
         if t == "lambda_expression":
             c = 0
             body = node.child_by_field_name("body")
             if body:
-                if body.type == "block":
-                    c += self._visit_children(body, nesting + 1)
-                else:
-                    c += self._visit(body, nesting + 1)
+                c += self._visit_children(body, nesting + 1)
             return c
 
-        # §2.1: null-coalescing (??, ?.) → no increment
-        if t in ("conditional_access_expression", "coalesce_expression"):
+        # ── B2: anonymous_method_expression → no increment, increases nesting ──
+        if t == "anonymous_method_expression":
+            c = 0
+            body = node.child_by_field_name("body")
+            if body:
+                c += self._visit_children(body, nesting + 1)
+            return c
+
+        # ── B2: local_function_statement (nested method) → increases nesting ──
+        if t == "local_function_statement":
+            c = 0
+            body = node.child_by_field_name("body")
+            if body:
+                c += self._visit_children(body, nesting + 1)
+            return c
+
+        # ── switch labels: no increment ──
+        if t in ("case", "default", "switch_label", "case_switch_label",
+                  "default_switch_label", "constant_pattern"):
+            return 0
+
+        # ── parenthesized_expression: unwrap ──
+        if t == "parenthesized_expression":
             return self._visit_children(node, nesting)
 
-        # 기타: 자식 재귀
+        # ── default: recurse ──
         return self._visit_children(node, nesting)
-
-    def _visit_switch_section(self, section_node, nesting):
-        """switch_section 내부 처리 (case/default 라벨 제외)"""
-        c = 0
-        past_colon = False
-        for child in section_node.children:
-            if child.type == ":":
-                past_colon = True
-                continue
-            if past_colon:
-                c += self._visit(child, nesting)
-        return c
 
     # ── if / else if / else chain ──
 
-    def _handle_if_chain(self, if_node, nesting, is_first=True):
+    def _handle_if_chain(self, if_node, nesting, is_else_if):
         c = 0
-
-        if is_first:
+        if is_else_if:
+            c += 1
+            self._add_detail(if_node, "else if", 1, 0)
+        else:
             inc = 1 + nesting
             self._add_detail(if_node, "if", 1, nesting)
             c += inc
-        else:
-            c += 1
-            self._add_detail(if_node, "else if", 1, 0)
 
-        # condition
         cond = if_node.child_by_field_name("condition")
         if cond:
             c += self._visit(cond, nesting)
 
-        # §2.3.1: increases nesting level for consequence
         consequence = if_node.child_by_field_name("consequence")
         if consequence:
             c += self._visit_children(consequence, nesting + 1)
 
-        # alternative
         alt = if_node.child_by_field_name("alternative")
         if alt:
             if alt.type == "if_statement":
-                c += self._handle_if_chain(alt, nesting, is_first=False)
+                c += self._handle_if_chain(alt, nesting, is_else_if=True)
             elif alt.type == "block":
                 c += 1
                 self._add_detail(alt, "else", 1, 0)
                 c += self._visit_children(alt, nesting + 1)
-            else:
-                c += 1
-                self._add_detail(alt, "else", 1, 0)
-                c += self._visit(alt, nesting + 1)
-
         return c
 
-    # ── Boolean operator sequences (§2.2) ──
+    # ── Boolean operator sequences (B1 fundamental, p.7-8) ──
 
-    def _handle_binary(self, node, nesting):
+    def _handle_boolean(self, node, nesting):
         ops = []
-        self._collect_logical_ops(node, ops)
-
+        self._collect_boolean_ops(node, ops)
         if not ops:
             return self._visit_children(node, nesting)
-
         c = 0
         prev = None
         for op in ops:
             if prev is None or op != prev:
                 c += 1
-                desc = f"logical sequence '{op}'" if prev is None else f"logical change to '{op}'"
+                desc = (f"logical sequence '{op}'" if prev is None
+                        else f"logical change to '{op}'")
                 self._add_detail_raw(desc, 1)
                 prev = op
         return c
 
-    def _collect_logical_ops(self, node, ops):
+    def _collect_boolean_ops(self, node, ops):
         if node.type != "binary_expression":
             return
         op_node = node.child_by_field_name("operator")
@@ -369,21 +427,17 @@ class CognitiveComplexityCalculator:
         op_text = self._text(op_node)
         if op_text not in ("&&", "||"):
             return
-
         left = node.child_by_field_name("left")
         right = node.child_by_field_name("right")
-
         if left and left.type == "binary_expression":
-            left_op = left.child_by_field_name("operator")
-            if left_op and self._text(left_op) in ("&&", "||"):
-                self._collect_logical_ops(left, ops)
-
+            lo = left.child_by_field_name("operator")
+            if lo and self._text(lo) in ("&&", "||"):
+                self._collect_boolean_ops(left, ops)
         ops.append(op_text)
-
         if right and right.type == "binary_expression":
-            right_op = right.child_by_field_name("operator")
-            if right_op and self._text(right_op) in ("&&", "||"):
-                self._collect_logical_ops(right, ops)
+            ro = right.child_by_field_name("operator")
+            if ro and self._text(ro) in ("&&", "||"):
+                self._collect_boolean_ops(right, ops)
 
 
 # ── Public API ──
@@ -391,14 +445,10 @@ class CognitiveComplexityCalculator:
 def calculate_file(filepath: str):
     with open(filepath, "r", encoding="utf-8") as f:
         source = f.read()
-    calc = CognitiveComplexityCalculator(source)
-    return calc.calculate()
-
+    return CognitiveComplexityCalculator(source).calculate()
 
 def calculate_source(source_code: str):
-    calc = CognitiveComplexityCalculator(source_code)
-    return calc.calculate()
-
+    return CognitiveComplexityCalculator(source_code).calculate()
 
 def calculate_directory(dirpath: str):
     all_results = []
@@ -415,7 +465,6 @@ def calculate_directory(dirpath: str):
                     print(f"Error processing {fpath}: {e}")
     return all_results
 
-
 def print_results(results, verbose=True):
     total = 0
     for r in results:
@@ -424,141 +473,27 @@ def print_results(results, verbose=True):
         fname = r.get("file", "")
         if fname:
             print(f"File: {fname}")
-        print(f"Function: {r['function']} (lines {r['start_line']}-{r['end_line']})")
+        print(f"Function: {r['function']} "
+              f"(lines {r['start_line']}-{r['end_line']})")
         print(f"Cognitive Complexity: {r['complexity']}")
         if verbose and r["details"]:
             print("Details:")
             for d in r["details"]:
                 print(d)
-
     print(f"\n{'='*60}")
     print(f"Total Cognitive Complexity: {total}")
     print(f"Number of functions: {len(results)}")
     if results:
         print(f"Average per function: {total / len(results):.1f}")
 
-
 if __name__ == "__main__":
-
-    test_code = '''
-using System;
-
-class Example {
-
-    string GetName() {
-        return this.name;
-    }
-
-    int SumOfPrimes(int max) {
-        int total = 0;
-        for (int i = 1; i <= max; ++i) {
-            for (int j = 2; j < i; ++j) {
-                if (i % j == 0) {
-                    goto next;
-                }
-            }
-            total += i;
-            next:;
-        }
-        return total;
-    }
-
-    string GetWords(int number) {
-        switch (number) {
-            case 1: return "one";
-            case 2: return "a couple";
-            default: return "lots";
-        }
-    }
-
-    int ComplexExample(bool a, bool b, int c) {
-        if (a && b) {
-            for (int i = 0; i < c; i++) {
-                if (i > 10) {
-                    return i;
-                } else if (i > 5) {
-                    continue;
-                } else {
-                    Console.WriteLine(i);
-                }
-            }
-        } else if (c > 0) {
-            switch (c) {
-                case 1: return 1;
-                default: return 0;
-            }
-        }
-        return 0;
-    }
-
-    bool BooleanLogic(bool a, bool b, bool c, bool d) {
-        if (a && b && c) {
-            return true;
-        } else if (a || b || c) {
-            return false;
-        } else if (a && b || c && d) {
-            return true;
-        } else {
-            return false;
-        }
-    }
-
-    void TryCatchFinally() {
-        try {
-            if (true) {}
-        } catch (Exception e) {
-            if (e is InvalidOperationException) {
-                throw;
-            }
-        } finally {
-            Console.WriteLine("done");
-        }
-    }
-
-    void LambdaExample() {
-        Action fn = () => {
-            if (true) {
-                Console.WriteLine("hi");
-            }
-        };
-    }
-
-    int TernaryExample(bool flag) {
-        return flag ? 1 : 0;
-    }
-
-    void DoWhileExample(int x) {
-        do { x--; } while (x > 0);
-    }
-
-    void ForEachExample(int[] arr) {
-        foreach (var item in arr) {
-            if (item > 0) {
-                Console.WriteLine(item);
-            }
-        }
-    }
-}
-'''
-
     print("C# Cognitive Complexity Calculator")
-    print("Based on Campbell 2018 (ICSE TechDebt '18)")
-    print("https://doi.org/10.1145/3194164.3194186")
+    print("SonarSource Specification v1.7 (29 August 2023)")
     print("=" * 60)
-
-    results = calculate_source(test_code)
-    print_results(results, verbose=True)
-
-    # Non-code test
-    print("\n\n--- Non-code test ---")
-    log = 'System.NullReferenceException: Object reference not set to an instance of an object'
-    r2 = calculate_source(log)
-    print(f"Log text: functions={len(r2)}, complexity={sum(x['complexity'] for x in r2)}")
 
     if len(sys.argv) > 1:
         path = sys.argv[1]
         verbose = "-v" in sys.argv or "--verbose" in sys.argv
-
         if os.path.isdir(path):
             results = calculate_directory(path)
         elif os.path.isfile(path):
@@ -566,15 +501,10 @@ class Example {
         else:
             print(f"Not found: {path}")
             sys.exit(1)
-
         if "--json" in sys.argv:
-            output = [{
-                "file": r.get("file", ""),
-                "function": r["function"],
-                "complexity": r["complexity"],
-                "start_line": r["start_line"],
-                "end_line": r["end_line"],
-            } for r in results]
+            output = [{"file": r.get("file",""), "function": r["function"],
+                       "complexity": r["complexity"], "start_line": r["start_line"],
+                       "end_line": r["end_line"]} for r in results]
             print(json.dumps(output, indent=2))
         else:
             print_results(results, verbose)
