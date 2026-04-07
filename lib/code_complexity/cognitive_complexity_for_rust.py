@@ -1,38 +1,119 @@
 """
 Rust Cognitive Complexity Calculator
-=====================================
-SonarSource Cognitive Complexity 화이트페이퍼 규칙에 따라
-Rust 소스코드의 함수별 인지 복잡도를 계산합니다.
+======================================
+Based on:
+  - G. Ann Campbell. 2018. "Cognitive Complexity: An Overview and Evaluation."
+    TechDebt '18, ICSE, Gothenburg, Sweden.
+    https://doi.org/10.1145/3194164.3194186
+  - SonarSource. "Cognitive Complexity - a new way of measuring understandability."
+    Version 1.7, 29 August 2023.
+    https://www.sonarsource.com/docs/CognitiveComplexity.pdf
 
-규칙:
-1. Structural increment (+1):
-   - if, else if, else, match, for, while, loop
-   - break/continue with label
-   - 논리 연산자 시퀀스 전환
+═══════════════════════════════════════════════════════════════════
+Specification (Appendix B, adapted for Rust)
+═══════════════════════════════════════════════════════════════════
 
-2. Nesting increment (+nesting_level):
-   - if, match, for, while, loop이 중첩될 때
-   - else if / else는 nesting penalty 없음 (structural +1만)
+B1. Increments (+1 each)
+────────────────────────
+  Structural (B):  +1, receives nesting penalty, increases nesting level
+    - if                                  → Rust: if_expression
+    - if let                              → Rust: if_expression with let_condition
+    - match (switch equivalent)           → Rust: match_expression (single +1, p.7)
+    - for                                 → Rust: for_expression
+    - while                               → Rust: while_expression
+    - while let                           → Rust: while_expression with let_condition
+    - loop                                → Rust: loop_expression (infinite loop)
 
-3. Nesting level 증가 (다음 자식들에게 적용):
-   - if, match, for, while, loop, closure
+  Hybrid (D):  +1, NO nesting penalty, but increases nesting level
+    - else if                             → Rust: if_expression as alternative of if_expression
+    - else                                → Rust: block as alternative of if_expression
 
-의존성: pip install tree-sitter tree-sitter-rust
+  Fundamental (C):  +1, NO nesting penalty, does NOT increase nesting level
+    - break 'LABEL, continue 'LABEL       → Rust: break_expression/continue_expression with label
+    - sequences of binary logical ops     → Rust: binary_expression with && / ||
+    - each method in a recursion cycle    → Not implemented
+
+  Not applicable in Rust:
+    - try / catch                         → Rust uses Result<T, E> + ? operator
+    - goto                                → Rust has no goto
+    - ternary operator                    → Rust uses if as expression
+    - do-while                            → Rust has loop + break
+
+  Ignored (p.6 "Ignore shorthand" / early return, p.8):
+    - ? operator (try_expression)         → No increment (it's an early-return shortcut)
+
+B2. Nesting level (these structures increase nesting for their children)
+────────────────────────────────────────────────────────────────────────
+    - if, else if, else
+    - match
+    - for, while, loop
+    - nested functions: closure_expression, nested function_item
+
+B3. Nesting increments (these structures RECEIVE +nesting_level penalty)
+────────────────────────────────────────────────────────────────────────
+    - if                (NOT else if, NOT else)
+    - match
+    - for, while, loop
+
+═══════════════════════════════════════════════════════════════════
+Rust-specific notes
+═══════════════════════════════════════════════════════════════════
+
+  - Rust has 3 distinct loop forms, all treated as structural +1:
+      • for x in iter { ... }   → for_expression
+      • while cond { ... }      → while_expression
+      • loop { ... }            → loop_expression (Rust's infinite loop)
+    Note: Rust has no `do-while`. The idiom is `loop { ...; if cond { break; } }`.
+
+  - if and match are EXPRESSIONS in Rust (can return values):
+      `let x = if a { 1 } else { 0 };`
+      `let y = match x { 1 => "one", _ => "other" };`
+    They are still treated as structural increments per the spec.
+
+  - if let / while let: pattern matching variants. Treated as regular if/while.
+    Tree-sitter wraps the condition in a `let_condition` node.
+
+  - match: single +1 for the entire match (per p.7 "Switches"). No additional
+    increment per arm. Match arm guards (`Some(n) if n > 0 =>`) do NOT add
+    increments per the spec — they're part of the match's pattern matching.
+
+  - break/continue with label: Rust uses `'label` syntax (e.g. `'outer: loop`).
+    Plain break/continue have no increment; labeled forms = +1 fundamental (p.8).
+
+  - closures: `|x| expr`, `move |x| { ... }`. No structural increment,
+    increases nesting level (p.9).
+
+  - The `?` operator (try_expression): treated as ignored shorthand, similar
+    to the spirit of early return (p.8). It's a control-flow simplification,
+    not an additional break in linear flow worth penalizing.
+
+  - Rust has no try/catch. Error handling uses Result<T, E> and ?. There is
+    a nightly `try { }` block (try_block node) which we ignore for complexity.
+
+  - impl blocks, trait blocks, mod blocks: walked recursively to find functions.
+
+═══════════════════════════════════════════════════════════════════
+Extension: Bare code fallback
+═══════════════════════════════════════════════════════════════════
+
+  For snippets without function definitions:
+    Wraps in `fn __top__() { ... }` and re-parses.
+
+Dependencies: pip install tree-sitter tree-sitter-rust
 """
 import os
+import re
 import sys
 import json
 from tree_sitter import Language, Parser
 
+
 def create_parser():
-    """tree-sitter-language-pack 우선, 개별 패키지 fallback"""
-    # 1. tree-sitter-language-pack
     try:
         from tree_sitter_language_pack import get_parser
         return get_parser("rust")
     except Exception:
         pass
-    # 2. 개별 패키지
     try:
         import tree_sitter_rust as _mod
         return Parser(Language(_mod.language()))
@@ -52,6 +133,8 @@ class CognitiveComplexityCalculator:
         self.results = []
         self.details = []
 
+    # ── Helpers ──
+
     def _text(self, node):
         if node is None:
             return ""
@@ -65,40 +148,86 @@ class CognitiveComplexityCalculator:
         total = structural + nesting
         if nesting > 0:
             self.details.append(
-                f"  Line {line:>4}: +{total} ({kind}: +{structural} structural, +{nesting} nesting)"
-            )
+                f"  Line {line:>4}: +{total} ({kind}: "
+                f"+{structural} structural, +{nesting} nesting)")
         else:
             self.details.append(f"  Line {line:>4}: +{total} ({kind})")
 
     def _add_detail_raw(self, description, increment):
         self.details.append(f"          +{increment} ({description})")
 
+    # ── Top-level traversal ──
+
     def calculate(self):
         self.results = []
         self._walk_top_level(self.tree.root_node)
+
+        # Bare code fallback
+        if not self.results:
+            wrapped = "fn __top__() {\n" + self.source_code + "\n}"
+            try:
+                tree2 = self.parser.parse(bytes(wrapped, "utf-8"))
+                if not tree2.root_node.has_error:
+                    orig_src, orig_tree = self.source_code, self.tree
+                    self.source_code = wrapped
+                    self.tree = tree2
+                    self.results = []
+                    self._walk_top_level(tree2.root_node)
+                    self.source_code = orig_src
+                    self.tree = orig_tree
+                    for r in self.results:
+                        r["function"] = "<top-level>"
+                        r["start_line"] = max(1, r["start_line"] - 1)
+                        r["end_line"] = max(1, r["end_line"] - 1)
+                        r["details"] = [
+                            re.sub(
+                                r"  Line\s+(\d+):",
+                                lambda m: f"  Line {max(1, int(m.group(1)) - 1):>4}:",
+                                d,
+                            ) if d.startswith("  Line ") else d
+                            for d in r["details"]
+                        ]
+            except Exception:
+                pass
+
         return self.results
 
     def _walk_top_level(self, node):
         for child in node.children:
-            if child.type == "function_item":
+            t = child.type
+            if t == "function_item":
                 self._process_function(child)
-            elif child.type == "impl_item":
-                for impl_child in child.children:
-                    if impl_child.type == "declaration_list":
-                        for item in impl_child.children:
-                            if item.type == "function_item":
-                                self._process_function(item)
-            elif child.type in ("mod_item", "source_file"):
-                self._walk_top_level(child)
-            elif hasattr(child, 'children'):
-                # mod 블록 등
-                for grandchild in child.children:
-                    if grandchild.type in ("declaration_list",):
-                        self._walk_top_level(grandchild)
+            elif t in ("impl_item", "trait_item"):
+                self._walk_impl_or_trait(child)
+            elif t == "mod_item":
+                # Modules can contain functions/impls
+                body = child.child_by_field_name("body")
+                if body:
+                    self._walk_top_level(body)
 
-    def _process_function(self, func_node):
+    def _walk_impl_or_trait(self, node):
+        body = node.child_by_field_name("body")
+        if body is None:
+            return
+        # Build context name (Type or Trait)
+        ctx_name = ""
+        type_node = node.child_by_field_name("type")
+        if type_node:
+            ctx_name = self._text(type_node)
+        else:
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                ctx_name = self._text(name_node)
+
+        for child in body.children:
+            if child.type == "function_item":
+                self._process_function(child, ctx_name)
+
+    def _process_function(self, func_node, ctx_name=""):
         name_node = func_node.child_by_field_name("name")
         func_name = self._text(name_node) if name_node else "<anonymous>"
+        if ctx_name:
+            func_name = f"{ctx_name}::{func_name}"
 
         self.details = []
         body = func_node.child_by_field_name("body")
@@ -114,6 +243,8 @@ class CognitiveComplexityCalculator:
             "details": list(self.details),
         })
 
+    # ── Node visitors ──
+
     def _visit_children(self, node, nesting):
         total = 0
         for child in node.children:
@@ -123,35 +254,24 @@ class CognitiveComplexityCalculator:
     def _visit(self, node, nesting):
         t = node.type
 
-        # ── if expression ──
+        # ── B1 structural: if (and if let) ──
         if t == "if_expression":
-            return self._handle_if_chain(node, nesting, is_first=True)
+            return self._handle_if_chain(node, nesting, is_else_if=False)
 
-        # ── match expression ──
-        if t == "match_expression":
-            inc = 1 + nesting
-            self._add_detail(node, "match", 1, nesting)
-            c = inc
-            match_body = node.child_by_field_name("body")
-            if match_body:
-                for arm in match_body.children:
-                    if arm.type == "match_arm":
-                        val = arm.child_by_field_name("value")
-                        if val:
-                            c += self._visit(val, nesting + 1)
-            return c
-
-        # ── for expression ──
+        # ── B1 structural: for ──
         if t == "for_expression":
             inc = 1 + nesting
             self._add_detail(node, "for", 1, nesting)
             c = inc
+            value = node.child_by_field_name("value")
+            if value:
+                c += self._visit(value, nesting)
             body = node.child_by_field_name("body")
             if body:
                 c += self._visit_children(body, nesting + 1)
             return c
 
-        # ── while expression ──
+        # ── B1 structural: while (and while let) ──
         if t == "while_expression":
             inc = 1 + nesting
             self._add_detail(node, "while", 1, nesting)
@@ -164,7 +284,7 @@ class CognitiveComplexityCalculator:
                 c += self._visit_children(body, nesting + 1)
             return c
 
-        # ── loop expression ──
+        # ── B1 structural: loop (Rust's infinite loop) ──
         if t == "loop_expression":
             inc = 1 + nesting
             self._add_detail(node, "loop", 1, nesting)
@@ -174,76 +294,146 @@ class CognitiveComplexityCalculator:
                 c += self._visit_children(body, nesting + 1)
             return c
 
-        # ── break / continue with label ──
-        if t in ("break_expression", "continue_expression"):
-            has_label = any(child.type == "label" for child in node.children)
-            if has_label:
-                keyword = "break" if t == "break_expression" else "continue"
-                self._add_detail(node, f"{keyword} with label", 1, 0)
-                return 1
+        # ── B1 structural: match (single +1 for entire match, p.7) ──
+        if t == "match_expression":
+            inc = 1 + nesting
+            self._add_detail(node, "match", 1, nesting)
+            c = inc
+            # Visit the value being matched (may contain calls/logic)
+            value = node.child_by_field_name("value")
+            if value:
+                c += self._visit(value, nesting)
+            # Visit match_block: each match_arm
+            body = node.child_by_field_name("body")
+            if body:
+                for child in body.children:
+                    if child.type == "match_arm":
+                        # No additional increment per arm.
+                        # Match arm guards are part of pattern matching, no +1.
+                        # Visit only the arm value (RHS), not the pattern.
+                        for sub in child.children:
+                            if sub.type not in (
+                                "match_pattern", "=>", ",",
+                                "tuple_struct_pattern", "tuple_pattern",
+                                "struct_pattern", "or_pattern",
+                                "range_pattern", "captured_pattern",
+                                "reference_pattern", "remaining_field_pattern",
+                                "literal_pattern", "identifier", "_",
+                                "scoped_identifier",
+                            ):
+                                c += self._visit(sub, nesting + 1)
+            return c
+
+        # ── B1 fundamental: logical operators (p.7-8) ──
+        if t == "binary_expression":
+            op_text = ""
+            for child in node.children:
+                if child.type in ("&&", "||"):
+                    op_text = child.type
+                    break
+            if op_text in ("&&", "||"):
+                return self._handle_boolean(node, nesting)
+            return self._visit_children(node, nesting)
+
+        # ── B1 fundamental: break 'LABEL / continue 'LABEL (p.8) ──
+        if t == "break_expression":
+            for child in node.children:
+                if child.type == "label":
+                    self._add_detail(node, "break to label", 1, 0)
+                    return 1
+            # Plain break: no increment. But may have a value to visit.
+            return self._visit_children(node, nesting)
+
+        if t == "continue_expression":
+            for child in node.children:
+                if child.type == "label":
+                    self._add_detail(node, "continue to label", 1, 0)
+                    return 1
             return 0
 
-        # ── binary expression (논리 연산자) ──
-        if t == "binary_expression":
-            return self._handle_binary(node, nesting)
+        # ── ? operator (try_expression): ignored (p.6/p.8) ──
+        if t == "try_expression":
+            # Don't increment, but visit children (the inner expression
+            # may contain method calls that need to be examined)
+            return self._visit_children(node, nesting)
 
-        # ── closure (nesting level +1) ──
+        # ── try_block (nightly): ignored ──
+        if t == "try_block":
+            for child in node.children:
+                if child.type == "block":
+                    return self._visit_children(child, nesting)
+            return 0
+
+        # ── B2: closure → no increment, increases nesting (p.9) ──
         if t == "closure_expression":
             c = 0
             body = node.child_by_field_name("body")
             if body:
-                c += self._visit(body, nesting + 1)
-            else:
-                for child in node.children:
-                    if child.type not in ("closure_parameters", "|", "move", "async", "||"):
-                        c += self._visit(child, nesting + 1)
+                # body may be a block { ... } or a single expression
+                if body.type == "block":
+                    c += self._visit_children(body, nesting + 1)
+                else:
+                    c += self._visit(body, nesting + 1)
             return c
 
-        # ── 기타: 자식 재귀 ──
+        # ── B2: nested function_item → no increment, increases nesting (p.9) ──
+        if t == "function_item":
+            c = 0
+            body = node.child_by_field_name("body")
+            if body:
+                c += self._visit_children(body, nesting + 1)
+            return c
+
+        # ── parenthesized_expression: unwrap ──
+        if t == "parenthesized_expression":
+            return self._visit_children(node, nesting)
+
+        # ── default: recurse ──
         return self._visit_children(node, nesting)
 
-    def _handle_if_chain(self, if_node, nesting, is_first=True):
+    # ── if / else if / else chain ──
+
+    def _handle_if_chain(self, if_node, nesting, is_else_if):
         c = 0
 
-        if is_first:
+        if is_else_if:
+            # B1 hybrid: else if → +1, NO nesting penalty, increases nesting
+            c += 1
+            self._add_detail(if_node, "else if", 1, 0)
+        else:
+            # B1 structural: if → +1, receives nesting
             inc = 1 + nesting
             self._add_detail(if_node, "if", 1, nesting)
             c += inc
-        else:
-            c += 1
-            self._add_detail(if_node, "else if", 1, 0)
 
-        # condition
+        # condition (may include let_condition for if let, or logical exprs)
         cond = if_node.child_by_field_name("condition")
         if cond:
             c += self._visit(cond, nesting)
 
-        # consequence
+        # consequence (then block)
         consequence = if_node.child_by_field_name("consequence")
         if consequence:
             c += self._visit_children(consequence, nesting + 1)
 
-        # alternative
+        # alternative: else_clause containing if_expression (else if) or block (else)
         alt = if_node.child_by_field_name("alternative")
         if alt and alt.type == "else_clause":
-            c += self._handle_else_clause(alt, nesting)
+            for child in alt.children:
+                if child.type == "if_expression":
+                    c += self._handle_if_chain(child, nesting, is_else_if=True)
+                elif child.type == "block":
+                    c += 1
+                    self._add_detail(child, "else", 1, 0)
+                    c += self._visit_children(child, nesting + 1)
 
         return c
 
-    def _handle_else_clause(self, else_clause, nesting):
-        c = 0
-        for child in else_clause.children:
-            if child.type == "if_expression":
-                c += self._handle_if_chain(child, nesting, is_first=False)
-            elif child.type == "block":
-                c += 1
-                self._add_detail(else_clause, "else", 1, 0)
-                c += self._visit_children(child, nesting + 1)
-        return c
+    # ── Boolean operator sequences (B1 fundamental, p.7-8) ──
 
-    def _handle_binary(self, node, nesting):
+    def _handle_boolean(self, node, nesting):
         ops = []
-        self._collect_logical_ops(node, ops)
+        self._collect_boolean_ops(node, ops)
 
         if not ops:
             return self._visit_children(node, nesting)
@@ -253,49 +443,60 @@ class CognitiveComplexityCalculator:
         for op in ops:
             if prev is None or op != prev:
                 c += 1
-                desc = f"logical sequence '{op}'" if prev is None else f"logical change to '{op}'"
+                desc = (f"logical sequence '{op}'"
+                        if prev is None
+                        else f"logical change to '{op}'")
                 self._add_detail_raw(desc, 1)
                 prev = op
         return c
 
-    def _collect_logical_ops(self, node, ops):
+    def _collect_boolean_ops(self, node, ops):
         if node.type != "binary_expression":
             return
-        op_node = node.child_by_field_name("operator")
-        if op_node is None:
-            return
-        op_text = self._text(op_node)
+        # In Rust tree-sitter, the operator is a child node (not a field)
+        op_text = ""
+        left = None
+        right = None
+        for i, child in enumerate(node.children):
+            if child.type in ("&&", "||"):
+                op_text = child.type
+            elif left is None:
+                left = child
+            else:
+                right = child
         if op_text not in ("&&", "||"):
             return
 
-        left = node.child_by_field_name("left")
-        right = node.child_by_field_name("right")
-
         if left and left.type == "binary_expression":
-            left_op = left.child_by_field_name("operator")
-            if left_op and self._text(left_op) in ("&&", "||"):
-                self._collect_logical_ops(left, ops)
+            lo = ""
+            for child in left.children:
+                if child.type in ("&&", "||"):
+                    lo = child.type
+                    break
+            if lo in ("&&", "||"):
+                self._collect_boolean_ops(left, ops)
 
         ops.append(op_text)
 
         if right and right.type == "binary_expression":
-            right_op = right.child_by_field_name("operator")
-            if right_op and self._text(right_op) in ("&&", "||"):
-                self._collect_logical_ops(right, ops)
+            ro = ""
+            for child in right.children:
+                if child.type in ("&&", "||"):
+                    ro = child.type
+                    break
+            if ro in ("&&", "||"):
+                self._collect_boolean_ops(right, ops)
 
 
 # ── Public API ──
 
 def calculate_file(filepath: str):
     with open(filepath, "r", encoding="utf-8") as f:
-        source = f.read()
-    calc = CognitiveComplexityCalculator(source)
-    return calc.calculate()
+        return CognitiveComplexityCalculator(f.read()).calculate()
 
 
 def calculate_source(source_code: str):
-    calc = CognitiveComplexityCalculator(source_code)
-    return calc.calculate()
+    return CognitiveComplexityCalculator(source_code).calculate()
 
 
 def calculate_directory(dirpath: str):
@@ -322,7 +523,8 @@ def print_results(results, verbose=True):
         fname = r.get("file", "")
         if fname:
             print(f"File: {fname}")
-        print(f"Function: {r['function']} (lines {r['start_line']}-{r['end_line']})")
+        print(f"Function: {r['function']} "
+              f"(lines {r['start_line']}-{r['end_line']})")
         print(f"Cognitive Complexity: {r['complexity']}")
         if verbose and r["details"]:
             print("Details:")
@@ -337,72 +539,9 @@ def print_results(results, verbose=True):
 
 
 if __name__ == "__main__":
-
-    test_code = r'''
-fn simple_function() {
-    let x = 10;
-}
-
-fn sum_of_primes(max: i32) -> i32 {
-    let mut total = 0;
-    'outer: for i in 1..=max {
-        for j in 2..i {
-            if i % j == 0 {
-                continue 'outer;
-            }
-        }
-        total += i;
-    }
-    total
-}
-
-fn get_words(number: i32) -> &'static str {
-    match number {
-        1 => "one",
-        2 => "a couple",
-        _ => "lots",
-    }
-}
-
-fn complex_example(a: bool, b: bool, c: i32) -> i32 {
-    if a && b {
-        for i in 0..c {
-            if i > 10 {
-                return i;
-            } else if i > 5 {
-                continue;
-            } else {
-                println!("{}", i);
-            }
-        }
-    } else if c > 0 {
-        match c {
-            1 => return 1,
-            _ => return 0,
-        }
-    }
-    0
-}
-
-fn boolean_logic(a: bool, b: bool, c: bool, d: bool) -> bool {
-    if a && b && c {
-        true
-    } else if a || b || c {
-        false
-    } else if a && b || c && d {
-        true
-    } else {
-        false
-    }
-}
-'''
-
     print("Rust Cognitive Complexity Calculator")
-    print("Based on SonarSource Cognitive Complexity specification")
+    print("SonarSource Specification v1.7 (29 August 2023)")
     print("=" * 60)
-
-    results = calculate_source(test_code)
-    print_results(results, verbose=True)
 
     if len(sys.argv) > 1:
         path = sys.argv[1]

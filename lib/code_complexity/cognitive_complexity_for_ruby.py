@@ -1,20 +1,103 @@
 """
 Ruby Cognitive Complexity Calculator
-Based on Campbell 2018 (ICSE TechDebt '18)
+======================================
+Based on:
+  - G. Ann Campbell. 2018. "Cognitive Complexity: An Overview and Evaluation."
+    TechDebt '18, ICSE, Gothenburg, Sweden.
+    https://doi.org/10.1145/3194164.3194186
+  - SonarSource. "Cognitive Complexity - a new way of measuring understandability."
+    Version 1.7, 29 August 2023.
+    https://www.sonarsource.com/docs/CognitiveComplexity.pdf
+
+═══════════════════════════════════════════════════════════════════
+Specification (Appendix B, adapted for Ruby)
+═══════════════════════════════════════════════════════════════════
+
+B1. Increments (+1 each)
+────────────────────────
+  Structural (B):  +1, receives nesting penalty, increases nesting level
+    - if                                  → Ruby: if
+    - unless                              → Ruby: unless (treated like if)
+    - if/unless modifier (postfix)        → Ruby: if_modifier, unless_modifier
+    - case/when (switch equivalent)       → Ruby: case (single +1, p.7)
+    - for                                 → Ruby: for
+    - while, until                        → Ruby: while, until
+    - rescue (catch equivalent)           → Ruby: rescue clause inside begin (single +1, p.7)
+    - ternary operator                    → Ruby: conditional
+
+  Hybrid (D):  +1, NO nesting penalty, but increases nesting level
+    - elsif                               → Ruby: elsif as alternative of if
+    - else                                → Ruby: else as alternative of if/unless
+
+  Fundamental (C):  +1, NO nesting penalty, does NOT increase nesting level
+    - sequences of binary logical ops     → Ruby: binary with && / || / and / or
+    - each method in a recursion cycle    → Not implemented
+
+  Not applicable in Ruby:
+    - goto                                → Ruby has no goto
+    - break LABEL, continue LABEL         → Ruby has no labeled break/continue
+
+  Ignored (p.6 "Ignore shorthand"):
+    - safe navigation (&.)                → No increment
+
+B2. Nesting level
+────────────────────────────────────────────────────────────────────────
+    - if, unless, elsif, else, ternary, if/unless modifier
+    - case
+    - for, while, until
+    - rescue
+    - nested methods/blocks: do_block, brace block, lambda, nested method
+
+B3. Nesting increments (receive +nesting_level penalty)
+────────────────────────────────────────────────────────────────────────
+    - if, unless, ternary       (NOT elsif, NOT else)
+    - case
+    - for, while, until
+    - rescue
+
+═══════════════════════════════════════════════════════════════════
+Ruby-specific notes
+═══════════════════════════════════════════════════════════════════
+
+  - Ruby has many ways to express conditionals/loops:
+      if/unless (statement and modifier forms), while/until,
+      case/when, ternary (?:), and many block-taking methods (each, map).
+  - `unless` is treated like `if` (it's just `if` with negated condition).
+  - `until` is treated like `while`.
+  - Postfix modifiers (`x if cond`, `x unless cond`) are full structural
+    increments per the spec — they break linear flow just like prefix forms.
+  - case/when: entire case + all when clauses = single structural +1 (p.7).
+  - begin/rescue/ensure: begin and ensure are ignored (like try/finally,
+    p.7). Each rescue clause = +1 structural + nesting penalty.
+  - Ruby's `and`/`or` are lower-precedence aliases for `&&`/`||`. Both
+    forms count for logical operator sequences (normalized to `&&`/`||`).
+  - Blocks (do...end and { }), lambdas (-> { }), and Proc.new/proc { }
+    all act as nested methods → no structural increment, increases nesting.
+    This includes blocks passed to .each, .map, .select, etc.
+  - Ruby has no goto, no labeled break/continue, no try/catch keyword.
+
+═══════════════════════════════════════════════════════════════════
+Extension: Bare code fallback
+═══════════════════════════════════════════════════════════════════
+
+  For snippets without method/class definitions:
+    Wraps the source in `def __top__\n ... \nend` and re-parses.
+
 Dependencies: pip install tree-sitter tree-sitter-ruby
 """
 import os
+import re
+import sys
+import json
 from tree_sitter import Language, Parser
 
+
 def create_parser():
-    """tree-sitter-language-pack 우선, 개별 패키지 fallback"""
-    # 1. tree-sitter-language-pack
     try:
         from tree_sitter_language_pack import get_parser
         return get_parser("ruby")
     except Exception:
         pass
-    # 2. 개별 패키지
     try:
         import tree_sitter_ruby as _mod
         return Parser(Language(_mod.language()))
@@ -26,210 +109,511 @@ def create_parser():
 
 
 class CognitiveComplexityCalculator:
-    def __init__(self, src):
-        self.src = src; self.p = create_parser()
-        self.tree = self.p.parse(bytes(src, "utf-8"))
-        self.results = []; self.details = []
 
-    def _t(self, n): return "" if n is None else self.src[n.start_byte:n.end_byte]
-    def _l(self, n): return n.start_point[0]+1
-    def _a(self, n, k, s, ne):
-        l=self._l(n); t=s+ne
-        self.details.append(f"  Line {l:>4}: +{t} ({k}: +{s} structural, +{ne} nesting)" if ne else f"  Line {l:>4}: +{t} ({k})")
-    def _ar(self, d, i): self.details.append(f"          +{i} ({d})")
+    def __init__(self, source_code: str):
+        self.source_code = source_code
+        self.parser = create_parser()
+        self.tree = self.parser.parse(bytes(source_code, "utf-8"))
+        self.results = []
+        self.details = []
+
+    # ── Helpers ──
+
+    def _text(self, node):
+        if node is None:
+            return ""
+        return self.source_code[node.start_byte:node.end_byte]
+
+    def _line(self, node):
+        return node.start_point[0] + 1
+
+    def _add_detail(self, node, kind, structural, nesting):
+        line = self._line(node)
+        total = structural + nesting
+        if nesting > 0:
+            self.details.append(
+                f"  Line {line:>4}: +{total} ({kind}: "
+                f"+{structural} structural, +{nesting} nesting)")
+        else:
+            self.details.append(f"  Line {line:>4}: +{total} ({kind})")
+
+    def _add_detail_raw(self, description, increment):
+        self.details.append(f"          +{increment} ({description})")
+
+    # ── Top-level traversal ──
 
     def calculate(self):
         self.results = []
-        self._walk(self.tree.root_node)
+        self._walk_top_level(self.tree.root_node)
+
+        # Bare code fallback
+        if not self.results:
+            wrapped = "def __top__\n" + self.source_code + "\nend"
+            try:
+                tree2 = self.parser.parse(bytes(wrapped, "utf-8"))
+                if not tree2.root_node.has_error:
+                    orig_src, orig_tree = self.source_code, self.tree
+                    self.source_code = wrapped
+                    self.tree = tree2
+                    self.results = []
+                    self._walk_top_level(tree2.root_node)
+                    self.source_code = orig_src
+                    self.tree = orig_tree
+                    for r in self.results:
+                        r["function"] = "<top-level>"
+                        r["start_line"] = max(1, r["start_line"] - 1)
+                        r["end_line"] = max(1, r["end_line"] - 1)
+                        r["details"] = [
+                            re.sub(
+                                r"  Line\s+(\d+):",
+                                lambda m: f"  Line {max(1, int(m.group(1)) - 1):>4}:",
+                                d,
+                            ) if d.startswith("  Line ") else d
+                            for d in r["details"]
+                        ]
+            except Exception:
+                pass
+
         return self.results
 
-    def _walk(self, node):
-        for ch in node.children:
-            if ch.type in ("method", "singleton_method"): self._proc(ch)
-            elif ch.type in ("class", "module"): self._wcls(ch)
+    def _walk_top_level(self, node):
+        for child in node.children:
+            t = child.type
+            if t == "method":
+                self._process_function(child)
+            elif t == "singleton_method":
+                self._process_function(child)
+            elif t in ("class", "module"):
+                self._walk_class(child)
 
-    def _wcls(self, node):
-        body = node.child_by_field_name("body")
-        if body is None: return
-        for ch in body.children:
-            if ch.type in ("method", "singleton_method"): self._proc(ch)
-            elif ch.type in ("class", "module"): self._wcls(ch)
+    def _walk_class(self, class_node):
+        body = class_node.child_by_field_name("body")
+        if body is None:
+            return
+        for child in body.children:
+            t = child.type
+            if t == "method":
+                self._process_function(child)
+            elif t == "singleton_method":
+                self._process_function(child)
+            elif t in ("class", "module"):
+                self._walk_class(child)
 
-    def _proc(self, fn):
-        nn = fn.child_by_field_name("name")
-        name = self._t(nn) if nn else "<anon>"
+    def _process_function(self, func_node):
+        name_node = func_node.child_by_field_name("name")
+        func_name = self._text(name_node) if name_node else "<anonymous>"
+
+        # For singleton_method (def self.foo), prefix with self.
+        if func_node.type == "singleton_method":
+            obj = func_node.child_by_field_name("object")
+            if obj:
+                func_name = f"{self._text(obj)}.{func_name}"
+
         self.details = []
-        body = fn.child_by_field_name("body")
-        c = self._vc(body, 0) if body else 0
-        self.results.append({"function": name, "complexity": c,
-            "start_line": fn.start_point[0]+1, "end_line": fn.end_point[0]+1,
-            "details": list(self.details)})
+        body = func_node.child_by_field_name("body")
+        complexity = 0
+        if body:
+            complexity = self._visit_children(body, 0)
 
-    def _vc(self, n, ne):
-        t = 0
-        for ch in n.children: t += self._v(ch, ne)
-        return t
+        self.results.append({
+            "function": func_name,
+            "complexity": complexity,
+            "start_line": func_node.start_point[0] + 1,
+            "end_line": func_node.end_point[0] + 1,
+            "details": list(self.details),
+        })
 
-    def _v(self, n, ne):
-        t = n.type
+    # ── Node visitors ──
 
-        if t == "if": return self._hif(n, ne)
-        if t == "unless": return self._hunless(n, ne)
+    def _visit_children(self, node, nesting):
+        total = 0
+        for child in node.children:
+            total += self._visit(child, nesting)
+        return total
+
+    def _visit(self, node, nesting):
+        t = node.type
+
+        # ── B1 structural: if ──
+        if t == "if":
+            return self._handle_if_chain(node, nesting, is_elsif=False, kind="if")
+
+        # ── B1 structural: unless (treated like if) ──
+        if t == "unless":
+            return self._handle_if_chain(node, nesting, is_elsif=False, kind="unless")
+
+        # ── B1 structural: if/unless modifier (postfix) ──
         if t == "if_modifier":
-            self._a(n, "if modifier", 1, ne); return 1 + ne
+            inc = 1 + nesting
+            self._add_detail(node, "if (modifier)", 1, nesting)
+            c = inc
+            cond = node.child_by_field_name("condition")
+            if cond:
+                c += self._visit(cond, nesting)
+            body = node.child_by_field_name("body")
+            if body:
+                c += self._visit(body, nesting + 1)
+            return c
+
         if t == "unless_modifier":
-            self._a(n, "unless modifier", 1, ne); return 1 + ne
-
-        if t in ("while", "until"):
-            self._a(n, t, 1, ne); c = 1 + ne
-            cond = n.child_by_field_name("condition")
-            if cond: c += self._v(cond, ne)
-            body = n.child_by_field_name("body")
-            if body: c += self._vc(body, ne+1)
+            inc = 1 + nesting
+            self._add_detail(node, "unless (modifier)", 1, nesting)
+            c = inc
+            cond = node.child_by_field_name("condition")
+            if cond:
+                c += self._visit(cond, nesting)
+            body = node.child_by_field_name("body")
+            if body:
+                c += self._visit(body, nesting + 1)
             return c
 
+        # ── B1 structural: while ──
+        if t == "while":
+            inc = 1 + nesting
+            self._add_detail(node, "while", 1, nesting)
+            c = inc
+            cond = node.child_by_field_name("condition")
+            if cond:
+                c += self._visit(cond, nesting)
+            body = node.child_by_field_name("body")
+            if body:
+                c += self._visit_children(body, nesting + 1)
+            return c
+
+        # ── B1 structural: until (negated while) ──
+        if t == "until":
+            inc = 1 + nesting
+            self._add_detail(node, "until", 1, nesting)
+            c = inc
+            cond = node.child_by_field_name("condition")
+            if cond:
+                c += self._visit(cond, nesting)
+            body = node.child_by_field_name("body")
+            if body:
+                c += self._visit_children(body, nesting + 1)
+            return c
+
+        # ── B1 structural: while_modifier / until_modifier (postfix loops) ──
+        if t == "while_modifier":
+            inc = 1 + nesting
+            self._add_detail(node, "while (modifier)", 1, nesting)
+            c = inc
+            cond = node.child_by_field_name("condition")
+            if cond:
+                c += self._visit(cond, nesting)
+            body = node.child_by_field_name("body")
+            if body:
+                c += self._visit(body, nesting + 1)
+            return c
+
+        if t == "until_modifier":
+            inc = 1 + nesting
+            self._add_detail(node, "until (modifier)", 1, nesting)
+            c = inc
+            cond = node.child_by_field_name("condition")
+            if cond:
+                c += self._visit(cond, nesting)
+            body = node.child_by_field_name("body")
+            if body:
+                c += self._visit(body, nesting + 1)
+            return c
+
+        # ── B1 structural: for ──
         if t == "for":
-            self._a(n, "for", 1, ne); c = 1 + ne
-            body = n.child_by_field_name("body")
-            if body: c += self._vc(body, ne+1)
+            inc = 1 + nesting
+            self._add_detail(node, "for", 1, nesting)
+            c = inc
+            body = node.child_by_field_name("body")
+            if body:
+                c += self._visit_children(body, nesting + 1)
             return c
 
+        # ── B1 structural: case (single +1 for entire case, p.7) ──
         if t == "case":
-            self._a(n, "case", 1, ne); c = 1 + ne
-            for ch in n.children:
-                if ch.type == "when":
-                    body = ch.child_by_field_name("body")
-                    if body: c += self._vc(body, ne+1)
-                elif ch.type == "else":
-                    c += 1; self._a(ch, "else", 1, 0)
-                    for sub in ch.children:
-                        if sub.type not in ("else",): c += self._v(sub, ne+1)
+            inc = 1 + nesting
+            self._add_detail(node, "case", 1, nesting)
+            c = inc
+            # Visit the case value (may contain method calls)
+            value = node.child_by_field_name("value")
+            if value:
+                c += self._visit(value, nesting)
+            # Visit when/else clauses (no additional increment)
+            for child in node.children:
+                if child.type == "when":
+                    body = child.child_by_field_name("body")
+                    if body:
+                        c += self._visit_children(body, nesting + 1)
+                elif child.type == "else":
+                    for sub in child.children:
+                        if sub.type != "else":
+                            c += self._visit(sub, nesting + 1)
             return c
 
-        if t == "begin": return self._vc(n, ne)  # try equivalent
-        if t == "rescue":
-            self._a(n, "rescue", 1, ne); c = 1 + ne
-            body = n.child_by_field_name("body")
-            if body: c += self._vc(body, ne+1)
-            else:
-                then = n.child_by_field_name("then")
-                if then: c += self._vc(then, ne+1)
-            return c
-        if t == "ensure":
-            for ch in n.children:
-                if ch.type not in ("ensure",): return self._v(ch, ne)
-            return 0
-
-        if t == "conditional":  # ternary
-            self._a(n, "ternary", 1, ne); c = 1 + ne
-            cond = n.child_by_field_name("condition")
-            if cond: c += self._v(cond, ne)
-            cons = n.child_by_field_name("consequence")
-            if cons: c += self._v(cons, ne+1)
-            alt = n.child_by_field_name("alternative")
-            if alt: c += self._v(alt, ne+1)
+        # ── B1 structural: ternary (conditional) ──
+        if t == "conditional":
+            inc = 1 + nesting
+            self._add_detail(node, "ternary", 1, nesting)
+            c = inc
+            cond = node.child_by_field_name("condition")
+            if cond:
+                c += self._visit(cond, nesting)
+            consequence = node.child_by_field_name("consequence")
+            if consequence:
+                c += self._visit(consequence, nesting + 1)
+            alt = node.child_by_field_name("alternative")
+            if alt:
+                c += self._visit(alt, nesting + 1)
             return c
 
+        # ── begin/rescue/ensure: begin and ensure are ignored (p.7) ──
+        if t == "begin":
+            c = 0
+            for child in node.children:
+                if child.type == "rescue":
+                    c += self._handle_rescue(child, nesting)
+                elif child.type == "ensure":
+                    # ensure body: visit normally without increment
+                    for sub in child.children:
+                        if sub.type != "ensure":
+                            c += self._visit(sub, nesting)
+                elif child.type not in ("begin", "end"):
+                    c += self._visit(child, nesting)
+            return c
+
+        # ── B1 fundamental: logical operators (binary &&, ||, and, or) ──
         if t == "binary":
-            return self._hbin(n, ne)
+            op = node.child_by_field_name("operator")
+            if op and self._text(op) in ("&&", "||", "and", "or"):
+                return self._handle_boolean(node, nesting)
+            return self._visit_children(node, nesting)
 
-        if t in ("do_block", "block", "lambda"):
-            c = 0; body = n.child_by_field_name("body")
-            if body: c += self._vc(body, ne+1)
+        # ── B2: do_block (e.g. items.each do |x| ... end) → nesting (p.9) ──
+        if t == "do_block":
+            c = 0
+            body = node.child_by_field_name("body")
+            if body:
+                c += self._visit_children(body, nesting + 1)
             return c
 
-        return self._vc(n, ne)
+        # ── B2: brace block (e.g. items.each { |x| ... }) → nesting (p.9) ──
+        if t == "block":
+            c = 0
+            body = node.child_by_field_name("body")
+            if body:
+                c += self._visit_children(body, nesting + 1)
+            return c
 
-    def _hif(self, n, ne):
-        c = 1 + ne; self._a(n, "if", 1, ne)
-        cond = n.child_by_field_name("condition")
-        if cond: c += self._v(cond, ne)
-        cons = n.child_by_field_name("consequence")
-        if cons: c += self._vc(cons, ne+1)
-        alt = n.child_by_field_name("alternative")
+        # ── B2: lambda (-> { ... }) → nesting (p.9) ──
+        if t == "lambda":
+            c = 0
+            body = node.child_by_field_name("body")
+            if body:
+                # body is a block { ... }
+                c += self._visit_children(body, nesting + 1)
+            return c
+
+        # ── B2: nested method definition → nesting (p.9) ──
+        if t == "method":
+            c = 0
+            body = node.child_by_field_name("body")
+            if body:
+                c += self._visit_children(body, nesting + 1)
+            return c
+
+        if t == "singleton_method":
+            c = 0
+            body = node.child_by_field_name("body")
+            if body:
+                c += self._visit_children(body, nesting + 1)
+            return c
+
+        # ── parenthesized statements: unwrap ──
+        if t == "parenthesized_statements":
+            return self._visit_children(node, nesting)
+
+        # ── default: recurse ──
+        return self._visit_children(node, nesting)
+
+    # ── if / elsif / else chain ──
+
+    def _handle_if_chain(self, if_node, nesting, is_elsif, kind="if"):
+        c = 0
+
+        if is_elsif:
+            # B1 hybrid: elsif → +1, NO nesting penalty, increases nesting level
+            c += 1
+            self._add_detail(if_node, "elsif", 1, 0)
+        else:
+            # B1 structural: if/unless → +1, receives nesting
+            inc = 1 + nesting
+            self._add_detail(if_node, kind, 1, nesting)
+            c += inc
+
+        # condition
+        cond = if_node.child_by_field_name("condition")
+        if cond:
+            c += self._visit(cond, nesting)
+
+        # consequence (then body)
+        consequence = if_node.child_by_field_name("consequence")
+        if consequence:
+            # consequence may be a `then` node wrapping the body
+            for child in consequence.children:
+                if child.type != "then":
+                    c += self._visit(child, nesting + 1)
+
+        # alternative: elsif or else
+        alt = if_node.child_by_field_name("alternative")
         if alt:
-            if alt.type == "elsif": c += self._helsif(alt, ne)
+            if alt.type == "elsif":
+                c += self._handle_if_chain(alt, nesting, is_elsif=True)
             elif alt.type == "else":
-                c += 1; self._a(alt, "else", 1, 0)
-                for ch in alt.children:
-                    if ch.type not in ("else",): c += self._v(ch, ne+1)
+                c += 1
+                self._add_detail(alt, "else", 1, 0)
+                for child in alt.children:
+                    if child.type != "else":
+                        c += self._visit(child, nesting + 1)
+
         return c
 
-    def _hunless(self, n, ne):
-        c = 1 + ne; self._a(n, "unless", 1, ne)
-        cond = n.child_by_field_name("condition")
-        if cond: c += self._v(cond, ne)
-        cons = n.child_by_field_name("consequence")
-        if cons: c += self._vc(cons, ne+1)
-        alt = n.child_by_field_name("alternative")
-        if alt and alt.type == "else":
-            c += 1; self._a(alt, "else", 1, 0)
-            for ch in alt.children:
-                if ch.type not in ("else",): c += self._v(ch, ne+1)
+    # ── rescue clause handler ──
+
+    def _handle_rescue(self, rescue_node, nesting):
+        inc = 1 + nesting
+        self._add_detail(rescue_node, "rescue", 1, nesting)
+        c = inc
+        # rescue body (then) - use body field which points to the then node
+        body = rescue_node.child_by_field_name("body")
+        if body:
+            # body is a 'then' wrapper containing the actual statements
+            for child in body.children:
+                if child.type != "then":
+                    c += self._visit(child, nesting + 1)
         return c
 
-    def _helsif(self, n, ne):
-        c = 1; self._a(n, "elsif", 1, 0)
-        cond = n.child_by_field_name("condition")
-        if cond: c += self._v(cond, ne)
-        cons = n.child_by_field_name("consequence")
-        if cons: c += self._vc(cons, ne+1)
-        alt = n.child_by_field_name("alternative")
-        if alt:
-            if alt.type == "elsif": c += self._helsif(alt, ne)
-            elif alt.type == "else":
-                c += 1; self._a(alt, "else", 1, 0)
-                for ch in alt.children:
-                    if ch.type not in ("else",): c += self._v(ch, ne+1)
-        return c
+    # ── Boolean operator sequences (B1 fundamental, p.7-8) ──
 
-    def _hbin(self, n, ne):
-        ops = []; self._cops(n, ops)
-        if not ops: return self._vc(n, ne)
-        c = 0; prev = None
+    def _handle_boolean(self, node, nesting):
+        ops = []
+        self._collect_boolean_ops(node, ops)
+        if not ops:
+            return self._visit_children(node, nesting)
+
+        c = 0
+        prev = None
         for op in ops:
-            if prev is None or op != prev:
-                c += 1; self._ar(f"logical sequence '{op}'" if prev is None else f"logical change to '{op}'", 1)
-                prev = op
+            # Normalize: and→&&, or→||
+            norm = "&&" if op in ("&&", "and") else "||"
+            if prev is None or norm != prev:
+                c += 1
+                desc = (f"logical sequence '{op}'"
+                        if prev is None
+                        else f"logical change to '{op}'")
+                self._add_detail_raw(desc, 1)
+                prev = norm
         return c
 
-    def _cops(self, n, ops):
-        if n.type != "binary": return
-        op = n.child_by_field_name("operator")
-        if not op: return
-        ot = self._t(op)
-        if ot not in ("&&", "||", "and", "or"): return
-        left = n.child_by_field_name("left")
+    def _collect_boolean_ops(self, node, ops):
+        if node.type != "binary":
+            return
+        op_node = node.child_by_field_name("operator")
+        if op_node is None:
+            return
+        op_text = self._text(op_node)
+        if op_text not in ("&&", "||", "and", "or"):
+            return
+
+        left = node.child_by_field_name("left")
+        right = node.child_by_field_name("right")
+
         if left and left.type == "binary":
             lo = left.child_by_field_name("operator")
-            if lo and self._t(lo) in ("&&", "||", "and", "or"): self._cops(left, ops)
-        ops.append(ot)
-        right = n.child_by_field_name("right")
+            if lo and self._text(lo) in ("&&", "||", "and", "or"):
+                self._collect_boolean_ops(left, ops)
+
+        ops.append(op_text)
+
         if right and right.type == "binary":
             ro = right.child_by_field_name("operator")
-            if ro and self._t(ro) in ("&&", "||", "and", "or"): self._cops(right, ops)
+            if ro and self._text(ro) in ("&&", "||", "and", "or"):
+                self._collect_boolean_ops(right, ops)
 
 
-def calculate_file(fp):
-    with open(fp, "r", encoding="utf-8") as f: return CognitiveComplexityCalculator(f.read()).calculate()
-def calculate_source(code): return CognitiveComplexityCalculator(code).calculate()
-def calculate_directory(d):
-    r = []
-    for root, _, files in os.walk(d):
-        for f in sorted(files):
-            if f.endswith(".rb"):
-                p = os.path.join(root, f)
-                try: res = calculate_file(p); [x.update(file=p) for x in res]; r.extend(res)
-                except Exception as e: print(f"Error {p}: {e}")
-    return r
+# ── Public API ──
+
+def calculate_file(filepath: str):
+    with open(filepath, "r", encoding="utf-8") as f:
+        return CognitiveComplexityCalculator(f.read()).calculate()
+
+
+def calculate_source(source_code: str):
+    return CognitiveComplexityCalculator(source_code).calculate()
+
+
+def calculate_directory(dirpath: str):
+    all_results = []
+    for root, dirs, files in os.walk(dirpath):
+        for fname in sorted(files):
+            if fname.endswith(".rb"):
+                fpath = os.path.join(root, fname)
+                try:
+                    results = calculate_file(fpath)
+                    for r in results:
+                        r["file"] = fpath
+                    all_results.extend(results)
+                except Exception as e:
+                    print(f"Error processing {fpath}: {e}")
+    return all_results
+
+
 def print_results(results, verbose=True):
-    total = sum(r["complexity"] for r in results)
+    total = 0
     for r in results:
+        total += r["complexity"]
         print(f"\n{'='*60}")
-        if r.get("file"): print(f"File: {r['file']}")
-        print(f"Function: {r['function']} (lines {r['start_line']}-{r['end_line']})")
+        fname = r.get("file", "")
+        if fname:
+            print(f"File: {fname}")
+        print(f"Function: {r['function']} "
+              f"(lines {r['start_line']}-{r['end_line']})")
         print(f"Cognitive Complexity: {r['complexity']}")
-        if verbose:
-            for d in r.get("details", []): print(d)
-    print(f"\n{'='*60}\nTotal: {total}, Functions: {len(results)}")
-    if results: print(f"Average: {total/len(results):.1f}")
+        if verbose and r["details"]:
+            print("Details:")
+            for d in r["details"]:
+                print(d)
+
+    print(f"\n{'='*60}")
+    print(f"Total Cognitive Complexity: {total}")
+    print(f"Number of functions: {len(results)}")
+    if results:
+        print(f"Average per function: {total / len(results):.1f}")
+
+
+if __name__ == "__main__":
+    print("Ruby Cognitive Complexity Calculator")
+    print("SonarSource Specification v1.7 (29 August 2023)")
+    print("=" * 60)
+
+    if len(sys.argv) > 1:
+        path = sys.argv[1]
+        verbose = "-v" in sys.argv or "--verbose" in sys.argv
+
+        if os.path.isdir(path):
+            results = calculate_directory(path)
+        elif os.path.isfile(path):
+            results = calculate_file(path)
+        else:
+            print(f"Not found: {path}")
+            sys.exit(1)
+
+        if "--json" in sys.argv:
+            output = [{
+                "file": r.get("file", ""),
+                "function": r["function"],
+                "complexity": r["complexity"],
+                "start_line": r["start_line"],
+                "end_line": r["end_line"],
+            } for r in results]
+            print(json.dumps(output, indent=2))
+        else:
+            print_results(results, verbose)

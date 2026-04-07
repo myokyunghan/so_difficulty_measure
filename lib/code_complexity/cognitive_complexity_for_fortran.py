@@ -1,38 +1,194 @@
 """
 Fortran Cognitive Complexity Calculator
-========================================
-SonarSource Cognitive Complexity 화이트페이퍼 규칙에 따라
-Fortran 소스코드의 함수/서브루틴별 인지 복잡도를 계산합니다.
+=========================================
+Based on:
+  - G. Ann Campbell. 2018. "Cognitive Complexity: An Overview and Evaluation."
+    TechDebt '18, ICSE, Gothenburg, Sweden.
+    https://doi.org/10.1145/3194164.3194186
+  - SonarSource. "Cognitive Complexity - a new way of measuring understandability."
+    Version 1.7, 29 August 2023.
+    https://www.sonarsource.com/docs/CognitiveComplexity.pdf
 
-규칙:
-1. Structural increment (+1):
-   - if, else if, else, select case, do, do while
-   - goto, exit LABEL, cycle LABEL
-   - 논리 연산자 시퀀스 전환 (.and., .or.)
+═══════════════════════════════════════════════════════════════════
+Specification (Appendix B, adapted for Fortran)
+═══════════════════════════════════════════════════════════════════
 
-2. Nesting increment (+nesting_level):
-   - if, select case, do, do while이 중첩될 때
-   - else if / else는 nesting penalty 없음
+B1. Increments (+1 each)
+────────────────────────
+  Structural (B):  +1, receives nesting penalty, increases nesting level
+    - if (block or single-line)           → Fortran: if_statement
+    - select case                         → Fortran: select_case_statement
+                                            (single +1, p.7)
+    - do counted loop                     → Fortran: do_loop_statement with
+                                            loop_control_expression
+    - do labeled loop (old-style)         → Fortran: do_label_statement
+    - do while                            → Fortran: do_loop_statement with
+                                            a while_statement child
+    - where (array masking)               → Fortran: where_statement
+                                            Array equivalent of if; counted
+                                            as structural +1
+    - forall                              → Fortran: forall_statement
+                                            Array iteration; counted as
+                                            loop-equivalent +1
 
-3. Nesting level 증가:
-   - if, select case, do, do while
+  Hybrid (D):  +1, NO nesting penalty, but increases nesting level
+    - else if                             → Fortran: elseif_clause
+    - else                                → Fortran: else_clause
+    - elsewhere (where's else)            → Fortran: elsewhere_clause
 
-의존성: pip install tree-sitter tree-sitter-fortran
+  Fundamental (C):  +1, NO nesting penalty, no nesting change
+    - goto LABEL                          → Fortran: keyword_statement
+                                            with `goto` keyword
+    - exit LABEL / cycle LABEL            → Fortran: keyword_statement
+                                            with `exit` or `cycle` followed
+                                            by an identifier (named loop)
+    - sequences of binary logical ops     → Fortran: logical_expression with
+                                            .and. / .or. / .eqv. / .neqv.
+                                            operators
+    - each method in a recursion cycle    → Not implemented
+
+  Not applicable in Fortran:
+    - try/catch                           → Fortran has no exception
+                                            handling syntax. Errors are
+                                            handled via integer status
+                                            arguments (iostat=, stat=).
+                                            No syntactic construct exists.
+    - ternary                             → Fortran has no ternary operator.
+                                            The intrinsic merge(t, f, mask)
+                                            is a function, not control flow.
+    - plain break/continue (no label)     → Fortran's `exit`/`cycle` without
+                                            a label work like break/continue
+                                            but apply to the innermost loop.
+                                            Per spec, plain forms add no
+                                            complexity.
+
+B2. Nesting level
+────────────────────────────────────────────────────────────────────────
+    - if (and elseif/else clauses)
+    - select case
+    - do (all forms: counted, while, labeled)
+    - where, elsewhere
+    - forall
+    - nested subroutines/functions inside `internal_procedures`
+
+B3. Nesting increments (receive +nesting_level penalty)
+────────────────────────────────────────────────────────────────────────
+    - if (NOT elseif, NOT else)
+    - select case
+    - do (all forms)
+    - where (NOT elsewhere)
+    - forall
+
+═══════════════════════════════════════════════════════════════════
+Fortran-specific notes
+═══════════════════════════════════════════════════════════════════
+
+  - Fortran's logical operators are written between dots:
+        .and.    .or.    .not.    .eqv.    .neqv.    .xor.
+    Both `.and.` and `.or.` are sometimes (depending on compiler and
+    standard) short-circuit, sometimes not. Per the spec, both contribute
+    to fundamental logical operator sequences regardless of evaluation
+    order. `.not.` is unary and not counted in sequences. `.eqv.` and
+    `.neqv.` are logical equivalence operators — we count them as part
+    of sequences (they're binary boolean operators).
+
+  - Fortran has TWO if-statement forms:
+        ! Block form
+        if (cond) then
+          stmts
+        else if (cond2) then
+          stmts
+        else
+          stmts
+        end if
+        ! Single-line form
+        if (cond) statement
+    Both produce `if_statement` nodes. The block form has `then` as a
+    child token; single-line form does not. Both count as +1 structural.
+
+  - Fortran's `do` loop has multiple forms:
+        do i = 1, 10           ! counted (modern)
+        do i = 1, 10, 2        ! counted with stride
+        do while (cond)        ! while loop
+        do                     ! infinite loop (with internal exit)
+        do 100 i = 1, 10       ! labeled (old-style FORTRAN 77)
+    All produce `do_loop_statement` (or `do_label_statement` for the
+    old-style form). All are structural +1 with nesting.
+
+  - `select case` is Fortran's switch. The `selector` is the discriminant,
+    and each `case_statement` is a branch. Per p.7, the entire select
+    case is +1 (single increment). Individual case branches do NOT add
+    further increments.
+
+  - `where` and `elsewhere` are Fortran's array conditionals. They mask
+    array operations:
+        where (a > 0)
+          a = a * 2
+        elsewhere
+          a = 0
+        end where
+    We treat these like if/else: where = +1 structural with nesting,
+    elsewhere = +1 hybrid.
+
+  - `forall` is a parallel array constructor — it iterates over an index
+    range and applies an assignment to each element. Treated as loop
+    +1 structural with nesting.
+
+  - `exit` and `cycle` are Fortran's break and continue. Without a
+    label, they apply to the innermost loop and add no complexity (per
+    spec). With a label (`exit OUTER`, `cycle INNER`), they jump to a
+    named outer loop and count as fundamental +1.
+
+  - `goto LABEL` is supported in Fortran. Per spec, +1 fundamental.
+
+  - Fortran has nested procedures via `contains` blocks:
+        subroutine outer
+        contains
+          subroutine inner
+            ...
+          end subroutine inner
+        end subroutine outer
+    Inner procedures appear inside `internal_procedures` nodes. We
+    treat them as nested functions: visited at +1 nesting AND reported
+    as separate function entries (mirroring how Pascal nested procedures
+    are handled).
+
+  - Modules contain procedures via `contains_statement`. Module-level
+    procedures are reported with the module name as a prefix
+    (e.g., `mymod::foo`).
+
+  - The `block_construct` (Fortran 2008) is just a scoping block with
+    optional local declarations — NOT a control flow construct. We
+    visit its body without adding complexity.
+
+  - The `associate` construct creates aliases for expressions. NOT
+    control flow, just scoping. No increment.
+
+  - `recursive` is a procedure attribute (`recursive function fact`).
+    The procedure is still detected as a normal function/subroutine.
+
+═══════════════════════════════════════════════════════════════════
+Extension: Bare code fallback
+═══════════════════════════════════════════════════════════════════
+
+  Fortran source files always have a top-level `program`, `module`,
+  `subroutine`, or `function`. The `program` block's body is treated
+  as a function for complexity reporting.
+
+Dependencies: pip install tree-sitter tree-sitter-fortran
 """
 import os
 import sys
 import json
 from tree_sitter import Language, Parser
 
+
 def create_parser():
-    """tree-sitter-language-pack 우선, 개별 패키지 fallback"""
-    # 1. tree-sitter-language-pack
     try:
         from tree_sitter_language_pack import get_parser
         return get_parser("fortran")
     except Exception:
         pass
-    # 2. 개별 패키지
     try:
         import tree_sitter_fortran as _mod
         return Parser(Language(_mod.language()))
@@ -43,17 +199,24 @@ def create_parser():
             "  pip install tree-sitter-fortran")
 
 
+# Logical operator names in tree-sitter-fortran
+# (the parser uses escaped dot syntax for the operator types)
+_LOGICAL_OPS = frozenset([
+    "\\.and\\.", "\\.or\\.", "\\.eqv\\.", "\\.neqv\\.", "\\.xor\\.",
+    ".and.", ".or.", ".eqv.", ".neqv.", ".xor.",
+])
+
+
 class CognitiveComplexityCalculator:
 
     def __init__(self, source_code: str):
         self.source_code = source_code
-        try:
-            self.p = create_parser()
-            self.tree = self.p.parse(bytes(self.source_code, "utf-8"))
-        except Exception:
-            self.tree = None
+        self.parser = create_parser()
+        self.tree = self.parser.parse(bytes(source_code, "utf-8"))
         self.results = []
         self.details = []
+
+    # ── Helpers ──
 
     def _text(self, node):
         if node is None:
@@ -68,79 +231,155 @@ class CognitiveComplexityCalculator:
         total = structural + nesting
         if nesting > 0:
             self.details.append(
-                f"  Line {line:>4}: +{total} ({kind}: +{structural} structural, +{nesting} nesting)"
-            )
+                f"  Line {line:>4}: +{total} ({kind}: "
+                f"+{structural} structural, +{nesting} nesting)")
         else:
             self.details.append(f"  Line {line:>4}: +{total} ({kind})")
 
     def _add_detail_raw(self, description, increment):
         self.details.append(f"          +{increment} ({description})")
 
+    def _has_child_of_type(self, node, type_name):
+        for c in node.children:
+            if c.type == type_name:
+                return True
+        return False
+
+    def _find_child(self, node, type_name):
+        for c in node.children:
+            if c.type == type_name:
+                return c
+        return None
+
+    def _named_children(self, node):
+        return [c for c in node.children if c.is_named]
+
+    # ── Top-level traversal ──
+
     def calculate(self):
-        if self.tree is None:
-            return []
         self.results = []
-        self._walk_top_level(self.tree.root_node)
+        self._walk_top_level(self.tree.root_node, "")
         return self.results
 
-    def _walk_top_level(self, node):
+    def _walk_top_level(self, node, prefix):
         for child in node.children:
-            if child.type in ("subroutine", "function"):
-                self._process_function(child)
-            elif child.type == "program":
-                self._process_function(child)
-            elif child.type == "module":
-                # module 내부의 함수/서브루틴
-                for sub in child.children:
-                    if sub.type in ("subroutine", "function"):
-                        self._process_function(sub)
-                    elif sub.type == "internal_procedures":
-                        for item in sub.children:
-                            if item.type in ("subroutine", "function"):
-                                self._process_function(item)
+            t = child.type
+            if t == "program":
+                # The program itself is a function-like entity
+                self._process_program(child, prefix)
+            elif t == "module":
+                self._walk_module(child)
+            elif t == "subroutine":
+                self._process_function(child, prefix, "subroutine")
+            elif t == "function":
+                self._process_function(child, prefix, "function")
 
-    def _get_func_name(self, func_node):
-        """함수/서브루틴 이름 추출"""
-        # subroutine_statement 또는 function_statement에서 name 필드 찾기
-        for child in func_node.children:
-            if child.type in ("subroutine_statement", "function_statement", "program_statement"):
-                name_node = child.child_by_field_name("name")
+    def _walk_module(self, module_node):
+        # Get module name
+        mod_name = ""
+        for child in module_node.children:
+            if child.type == "module_statement":
+                name_node = self._find_child(child, "name")
+                if name_node:
+                    mod_name = self._text(name_node)
+                break
+        prefix = f"{mod_name}::" if mod_name else ""
+
+        # Walk internal_procedures
+        for child in module_node.children:
+            if child.type == "internal_procedures":
+                for sub in child.children:
+                    if sub.type == "subroutine":
+                        self._process_function(sub, prefix, "subroutine")
+                    elif sub.type == "function":
+                        self._process_function(sub, prefix, "function")
+
+    def _extract_proc_name(self, proc_node):
+        """Get the procedure name from a function/subroutine node."""
+        for child in proc_node.children:
+            if child.type in ("subroutine_statement", "function_statement"):
+                name_node = self._find_child(child, "name")
                 if name_node:
                     return self._text(name_node)
-                # fallback: name 타입 자식 찾기
-                for sub in child.children:
-                    if sub.type == "name":
-                        return self._text(sub)
         return "<anonymous>"
 
-    def _process_function(self, func_node):
-        func_name = self._get_func_name(func_node)
+    def _process_program(self, program_node, prefix):
+        """Process a `program` block."""
+        # Get program name
+        name = ""
+        for child in program_node.children:
+            if child.type == "program_statement":
+                name_node = self._find_child(child, "name")
+                if name_node:
+                    name = self._text(name_node)
+                break
+        if not name:
+            name = "<program>"
+        full_name = f"{prefix}{name}"
 
         self.details = []
-        complexity = self._visit_body(func_node, 0)
+        complexity = 0
+        nested = []
+
+        for child in program_node.children:
+            t = child.type
+            if t in ("program_statement", "end_program_statement"):
+                continue
+            if t == "internal_procedures":
+                # Collect nested procs to process after the program
+                for sub in child.children:
+                    if sub.type in ("subroutine", "function"):
+                        nested.append(sub)
+                continue
+            complexity += self._visit(child, 0)
 
         self.results.append({
-            "function": func_name,
+            "function": full_name,
+            "complexity": complexity,
+            "start_line": program_node.start_point[0] + 1,
+            "end_line": program_node.end_point[0] + 1,
+            "details": list(self.details),
+        })
+
+        for n in nested:
+            self._process_function(n, prefix, n.type)
+
+    def _process_function(self, func_node, prefix, kind):
+        """Process a subroutine or function. Recursively handles
+        nested procedures inside `internal_procedures`."""
+        name = self._extract_proc_name(func_node)
+        full_name = f"{prefix}{name}"
+
+        self.details = []
+        complexity = 0
+        nested = []
+
+        for child in func_node.children:
+            t = child.type
+            if t in ("subroutine_statement", "function_statement",
+                     "end_subroutine_statement", "end_function_statement"):
+                continue
+            if t == "internal_procedures":
+                # Collect nested procs to process after the parent
+                for sub in child.children:
+                    if sub.type in ("subroutine", "function"):
+                        nested.append(sub)
+                continue
+            complexity += self._visit(child, 0)
+
+        self.results.append({
+            "function": full_name,
             "complexity": complexity,
             "start_line": func_node.start_point[0] + 1,
             "end_line": func_node.end_point[0] + 1,
             "details": list(self.details),
         })
 
-    def _visit_body(self, node, nesting):
-        """함수 본문의 statements를 순회 (선언문 등은 건너뜀)"""
-        total = 0
-        skip_types = (
-            "subroutine_statement", "function_statement", "program_statement",
-            "end_subroutine_statement", "end_function_statement", "end_program_statement",
-            "implicit_statement", "variable_declaration", "use_statement",
-            "comment", "include_statement",
-        )
-        for child in node.children:
-            if child.type in skip_types:
-                continue
-            total += self._visit(child, nesting)
-        return total
+        # Process nested procs as separate entries
+        for n in nested:
+            self._process_function(n, prefix, n.type)
+
+    # ── Node visitors ──
 
     def _visit_children(self, node, nesting):
         total = 0
@@ -151,232 +390,291 @@ class CognitiveComplexityCalculator:
     def _visit(self, node, nesting):
         t = node.type
 
-        # ── if statement ──
+        # ── B1 structural: if ──
         if t == "if_statement":
             return self._handle_if(node, nesting)
 
-        # ── do loop (일반 do, do while 포함) ──
-        if t == "do_loop_statement":
-            return self._handle_do_loop(node, nesting)
-
-        # ── select case ──
+        # ── B1 structural: select case (p.7 single +1) ──
         if t == "select_case_statement":
             inc = 1 + nesting
             self._add_detail(node, "select case", 1, nesting)
             c = inc
             for child in node.children:
-                if child.type == "case_statement":
-                    c += self._visit_case_body(child, nesting + 1)
+                ct = child.type
+                if ct in ("selectcase", "selector",
+                          "end_select_statement"):
+                    continue
+                if ct == "case_statement":
+                    # Visit case body at +1 nesting (case body, not the label)
+                    for sub in child.children:
+                        if sub.type in ("case", "default", "(", ")",
+                                        "case_value_range_list"):
+                            continue
+                        c += self._visit(sub, nesting + 1)
+                else:
+                    c += self._visit(child, nesting)
             return c
 
-        # ── keyword_statement: goto, exit, cycle ──
+        # ── B1 structural: do (all forms) ──
+        if t == "do_loop_statement":
+            return self._handle_do(node, nesting)
+
+        if t == "do_label_statement":
+            inc = 1 + nesting
+            self._add_detail(node, "do (labeled)", 1, nesting)
+            return inc
+
+        # ── B1 structural: where ──
+        if t == "where_statement":
+            return self._handle_where(node, nesting)
+
+        # ── B1 structural: forall ──
+        if t == "forall_statement":
+            inc = 1 + nesting
+            self._add_detail(node, "forall", 1, nesting)
+            c = inc
+            for child in node.children:
+                if child.type in ("forall", "(", ")", "triplet_spec",
+                                  "end_forall_statement"):
+                    continue
+                c += self._visit(child, nesting + 1)
+            return c
+
+        # ── B1 fundamental: keyword_statement (goto, exit/cycle LABEL) ──
         if t == "keyword_statement":
-            return self._handle_keyword_statement(node)
+            return self._handle_keyword(node, nesting)
 
-        # ── logical_expression (.and., .or.) ──
+        # ── B1 fundamental: logical operators (.and., .or., .eqv., .neqv.) ──
         if t == "logical_expression":
-            return self._handle_logical(node, nesting)
+            op = node.child_by_field_name("operator")
+            if op and op.type in _LOGICAL_OPS:
+                return self._handle_boolean(node, nesting)
+            return self._visit_children(node, nesting)
 
-        # ── 기타: 자식 재귀 ──
+        # ── block_construct: just scoping, no complexity ──
+        if t == "block_construct":
+            c = 0
+            for child in node.children:
+                if child.type in ("block", "end_block_construct_statement"):
+                    continue
+                c += self._visit(child, nesting)
+            return c
+
+        # ── associate: just scoping (alias creation), no complexity ──
+        if t == "associate_statement":
+            c = 0
+            for child in node.children:
+                if child.type in ("associate", "(", ")", "association",
+                                  "end_associate_statement"):
+                    continue
+                c += self._visit(child, nesting)
+            return c
+
+        # ── default: recurse ──
         return self._visit_children(node, nesting)
+
+    # ── if statement (block or single-line) ──
 
     def _handle_if(self, if_node, nesting):
         c = 0
-
-        # if: +1 structural + nesting penalty
         inc = 1 + nesting
         self._add_detail(if_node, "if", 1, nesting)
         c += inc
 
-        # condition (parenthesized_expression 안의 논리 연산자)
+        # Visit condition for nested logical ops
         for child in if_node.children:
             if child.type == "parenthesized_expression":
-                c += self._visit_children(child, nesting)
+                c += self._visit(child, nesting)
                 break
 
-        # if body (then ~ elseif/else/endif 사이의 statements)
-        in_body = False
+        # Walk children: visit body statements at nesting+1, handle
+        # elseif/else clauses with hybrid increments
         for child in if_node.children:
-            if child.type == "then":
-                in_body = True
+            t = child.type
+            if t in ("if", "then", "parenthesized_expression",
+                     "end_if_statement"):
                 continue
-            if child.type in ("elseif_clause", "else_clause", "end_if_statement"):
-                in_body = False
-            if in_body:
+            if t == "elseif_clause":
+                c += 1
+                self._add_detail(child, "else if", 1, 0)
+                # Visit elseif's condition and body
+                for sub in child.children:
+                    st = sub.type
+                    if st in ("elseif", "then"):
+                        continue
+                    if st == "parenthesized_expression":
+                        c += self._visit(sub, nesting)
+                        continue
+                    c += self._visit(sub, nesting + 1)
+            elif t == "else_clause":
+                c += 1
+                self._add_detail(child, "else", 1, 0)
+                for sub in child.children:
+                    if sub.type == "else":
+                        continue
+                    c += self._visit(sub, nesting + 1)
+            else:
+                # Body statement of the then-branch
                 c += self._visit(child, nesting + 1)
-
-        # elseif / else
-        for child in if_node.children:
-            if child.type == "elseif_clause":
-                c += self._handle_elseif(child, nesting)
-            elif child.type == "else_clause":
-                c += self._handle_else(child, nesting)
-
         return c
 
-    def _handle_elseif(self, elseif_node, nesting):
+    # ── do loop (counted, while, infinite, labeled) ──
+
+    def _handle_do(self, do_node, nesting):
+        # Distinguish do-while from counted do
+        is_while = self._has_child_of_type(do_node, "while_statement")
+        kind = "do while" if is_while else "do"
+
         c = 0
-        c += 1
-        self._add_detail(elseif_node, "else if", 1, 0)
-
-        # condition
-        for child in elseif_node.children:
-            if child.type == "parenthesized_expression":
-                c += self._visit_children(child, nesting)
-                break
-
-        # body (then 이후의 statements)
-        in_body = False
-        for child in elseif_node.children:
-            if child.type == "then":
-                in_body = True
-                continue
-            if in_body:
-                c += self._visit(child, nesting + 1)
-
-        return c
-
-    def _handle_else(self, else_node, nesting):
-        c = 0
-        c += 1
-        self._add_detail(else_node, "else", 1, 0)
-
-        # body (else 키워드 이후)
-        past_else = False
-        for child in else_node.children:
-            if child.type == "else":
-                past_else = True
-                continue
-            if past_else:
-                c += self._visit(child, nesting + 1)
-
-        return c
-
-    def _handle_do_loop(self, do_node, nesting):
-        # do while인지 확인
-        has_while = any(child.type == "while_statement" for child in do_node.children)
-        label = "do while" if has_while else "do"
-
         inc = 1 + nesting
-        self._add_detail(do_node, label, 1, nesting)
-        c = inc
+        self._add_detail(do_node, kind, 1, nesting)
+        c += inc
 
-        # body: do ~ end do 사이의 statements
-        skip_types = (
-            "do", "block_label_start_expression", "loop_control_expression",
-            "while_statement", "end_do_loop_statement",
-        )
         for child in do_node.children:
-            if child.type in skip_types:
+            t = child.type
+            if t in ("do", "loop_control_expression",
+                     "block_label_start_expression",
+                     "end_do_loop_statement"):
+                continue
+            if t == "while_statement":
+                # Visit the condition for nested logical ops
+                for sub in child.children:
+                    if sub.type == "parenthesized_expression":
+                        c += self._visit(sub, nesting)
                 continue
             c += self._visit(child, nesting + 1)
-
         return c
 
-    def _visit_case_body(self, case_node, nesting):
-        """case_statement 내부의 statements만 처리"""
+    # ── where / elsewhere ──
+
+    def _handle_where(self, where_node, nesting):
         c = 0
-        past_paren = False
-        for child in case_node.children:
-            if child.type in ("case", "default", "(", ")", "case_value_range_list"):
-                continue
-            if child.type == ")":
-                past_paren = True
-                continue
-            # case 키워드와 값 이후의 statements만 처리
-            if child.type not in ("case", "default", "(", ")", "case_value_range_list",
-                                   "end_select_statement"):
+        inc = 1 + nesting
+        self._add_detail(where_node, "where", 1, nesting)
+        c += inc
+
+        # Visit condition
+        for child in where_node.children:
+            if child.type == "parenthesized_expression":
                 c += self._visit(child, nesting)
+                break
+
+        for child in where_node.children:
+            t = child.type
+            if t in ("where", "parenthesized_expression",
+                     "end_where_statement"):
+                continue
+            if t == "elsewhere_clause":
+                c += 1
+                self._add_detail(child, "elsewhere", 1, 0)
+                for sub in child.children:
+                    if sub.type == "elsewhere":
+                        continue
+                    c += self._visit(sub, nesting + 1)
+            else:
+                c += self._visit(child, nesting + 1)
         return c
 
-    def _handle_keyword_statement(self, node):
-        """goto, exit LABEL, cycle LABEL 처리"""
-        children = [ch for ch in node.children]
+    # ── keyword statements (goto, exit, cycle, return, etc.) ──
 
-        # goto
-        if any(ch.type == "goto" for ch in children):
+    def _handle_keyword(self, node, nesting):
+        # First child is the keyword
+        kw = None
+        for child in node.children:
+            if child.type in ("goto", "exit", "cycle", "return",
+                              "continue", "stop", "pause"):
+                kw = child.type
+                break
+        if kw is None:
+            return 0
+
+        if kw == "goto":
+            # +1 fundamental (goto LABEL)
             self._add_detail(node, "goto", 1, 0)
             return 1
 
-        # exit / cycle with label
-        has_exit = any(ch.type == "exit" for ch in children)
-        has_cycle = any(ch.type == "cycle" for ch in children)
-        has_label = any(ch.type == "identifier" for ch in children)
+        if kw in ("exit", "cycle"):
+            # Check for an identifier (label) after the keyword. Plain
+            # exit/cycle (no label) doesn't add complexity.
+            has_label = False
+            for child in node.children:
+                if child.type == "identifier":
+                    has_label = True
+                    break
+            if has_label:
+                self._add_detail(node, f"{kw} LABEL", 1, 0)
+                return 1
+            return 0
 
-        if has_exit and has_label:
-            self._add_detail(node, "exit with label", 1, 0)
-            return 1
-        if has_cycle and has_label:
-            self._add_detail(node, "cycle with label", 1, 0)
-            return 1
-
+        # return, continue, stop, pause: no increment
         return 0
 
-    def _handle_logical(self, node, nesting):
-        """논리 연산자 (.and., .or.) 시퀀스 처리"""
-        ops = []
-        self._collect_logical_ops(node, ops)
+    # ── Boolean operator sequences (B1 fundamental, p.7-8) ──
 
+    def _handle_boolean(self, node, nesting):
+        ops = []
+        self._collect_boolean_ops(node, ops)
         if not ops:
             return self._visit_children(node, nesting)
 
         c = 0
         prev = None
         for op in ops:
-            if prev is None or op != prev:
+            # Normalize operator names by stripping escapes and dots
+            norm = op.replace("\\", "").replace(".", "")
+            if prev is None or norm != prev:
                 c += 1
-                desc = f"logical sequence '{op}'" if prev is None else f"logical change to '{op}'"
+                clean_op = "." + norm + "."
+                desc = (f"logical sequence '{clean_op}'"
+                        if prev is None
+                        else f"logical change to '{clean_op}'")
                 self._add_detail_raw(desc, 1)
-                prev = op
+                prev = norm
         return c
 
-    def _collect_logical_ops(self, node, ops):
+    def _collect_boolean_ops(self, node, ops):
         if node.type != "logical_expression":
             return
-
         op_node = node.child_by_field_name("operator")
         if op_node is None:
             return
-
-        op_text = self._text(op_node).lower()
-        if op_text not in (".and.", ".or."):
+        if op_node.type not in _LOGICAL_OPS:
             return
+        op_text = op_node.type
 
         left = node.child_by_field_name("left")
         right = node.child_by_field_name("right")
 
         if left and left.type == "logical_expression":
-            left_op = left.child_by_field_name("operator")
-            if left_op and self._text(left_op).lower() in (".and.", ".or."):
-                self._collect_logical_ops(left, ops)
+            lo = left.child_by_field_name("operator")
+            if lo and lo.type in _LOGICAL_OPS:
+                self._collect_boolean_ops(left, ops)
 
         ops.append(op_text)
 
         if right and right.type == "logical_expression":
-            right_op = right.child_by_field_name("operator")
-            if right_op and self._text(right_op).lower() in (".and.", ".or."):
-                self._collect_logical_ops(right, ops)
+            ro = right.child_by_field_name("operator")
+            if ro and ro.type in _LOGICAL_OPS:
+                self._collect_boolean_ops(right, ops)
 
 
 # ── Public API ──
 
 def calculate_file(filepath: str):
     with open(filepath, "r", encoding="utf-8") as f:
-        source = f.read()
-    calc = CognitiveComplexityCalculator(source)
-    return calc.calculate()
+        return CognitiveComplexityCalculator(f.read()).calculate()
 
 
 def calculate_source(source_code: str):
-    calc = CognitiveComplexityCalculator(source_code)
-    return calc.calculate()
+    return CognitiveComplexityCalculator(source_code).calculate()
 
 
 def calculate_directory(dirpath: str):
     all_results = []
     for root, dirs, files in os.walk(dirpath):
         for fname in sorted(files):
-            if fname.endswith((".f90", ".f95", ".f03", ".f08", ".f", ".for", ".fpp")):
+            if fname.lower().endswith((".f", ".for", ".f77", ".f90",
+                                        ".f95", ".f03", ".f08", ".ftn")):
                 fpath = os.path.join(root, fname)
                 try:
                     results = calculate_file(fpath)
@@ -396,7 +694,8 @@ def print_results(results, verbose=True):
         fname = r.get("file", "")
         if fname:
             print(f"File: {fname}")
-        print(f"Function: {r['function']} (lines {r['start_line']}-{r['end_line']})")
+        print(f"Function: {r['function']} "
+              f"(lines {r['start_line']}-{r['end_line']})")
         print(f"Cognitive Complexity: {r['complexity']}")
         if verbose and r["details"]:
             print("Details:")
@@ -411,102 +710,9 @@ def print_results(results, verbose=True):
 
 
 if __name__ == "__main__":
-
-    test_code = '''
-! Expected: 0
-subroutine simple()
-  implicit none
-  integer :: x
-  x = 10
-end subroutine simple
-
-! Expected: 7
-subroutine sum_of_primes(max_val, total)
-  implicit none
-  integer, intent(in) :: max_val
-  integer, intent(out) :: total
-  integer :: i, j
-  logical :: is_prime
-  total = 0
-  do i = 1, max_val                              ! +1 (do)
-    is_prime = .true.
-    do j = 2, i - 1                              ! +2 (do, nesting=1)
-      if (mod(i, j) == 0) then                   ! +3 (if, nesting=2)
-        is_prime = .false.
-        exit                                      ! no label, no increment
-      end if
-    end do
-    if (is_prime) then                            ! +1 (if — back to nesting=1... wait, this is at nesting=1)
-      total = total + i
-    end if
-  end do
-end subroutine sum_of_primes
-
-! Expected: 1
-subroutine get_words(number)
-  implicit none
-  integer, intent(in) :: number
-  select case (number)                            ! +1 (select case)
-    case (1)
-      print *, 'one'
-    case (2)
-      print *, 'a couple'
-    case default
-      print *, 'lots'
-  end select
-end subroutine get_words
-
-! Expected: 9
-subroutine boolean_logic(a, b, c, d)
-  implicit none
-  logical, intent(in) :: a, b, c, d
-  if (a .and. b .and. c) then                    ! +1 (if) +1 (.and.)
-    return
-  else if (a .or. b .or. c) then                 ! +1 (else if) +1 (.or.)
-    return
-  else if (a .and. b .or. c .and. d) then        ! +1 (else if) +1(.and.) +1(.or.) +1(.and.)
-    return
-  else                                            ! +1 (else)
-    return
-  end if
-end subroutine boolean_logic
-
-! Expected: 3
-subroutine labeled_loop()
-  implicit none
-  integer :: i, j
-  outer: do i = 1, 10                            ! +1 (do)
-    inner: do j = 1, 10                          ! +2 (do, nesting=1)
-      if (i == j) then                           ! +3 (if, nesting=2)
-        exit outer                               ! +1 (exit with label)
-      end if
-    end do inner
-  end do outer
-end subroutine labeled_loop
-
-! Expected: 1
-subroutine do_while_example(x)
-  implicit none
-  integer, intent(inout) :: x
-  do while (x > 0)                               ! +1 (do while)
-    x = x - 1
-  end do
-end subroutine do_while_example
-
-! Expected: 1
-subroutine goto_example()
-  implicit none
-  goto 100                                        ! +1 (goto)
-  100 continue
-end subroutine goto_example
-'''
-
     print("Fortran Cognitive Complexity Calculator")
-    print("Based on SonarSource Cognitive Complexity specification")
+    print("SonarSource Specification v1.7 (29 August 2023)")
     print("=" * 60)
-
-    results = calculate_source(test_code)
-    print_results(results, verbose=True)
 
     if len(sys.argv) > 1:
         path = sys.argv[1]
