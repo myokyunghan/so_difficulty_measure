@@ -139,12 +139,22 @@ from tree_sitter import Language, Parser
 def create_parser():
     try:
         from tree_sitter_language_pack import get_parser
-        return get_parser("haskell")
+        _p = get_parser("haskell")
+        try:
+            _p.timeout_micros = 5_000_000
+        except (AttributeError, TypeError):
+            pass
+        return _p
     except Exception:
         pass
     try:
         import tree_sitter_haskell as _mod
-        return Parser(Language(_mod.language()))
+        _p = Parser(Language(_mod.language()))
+        try:
+            _p.timeout_micros = 5_000_000
+        except (AttributeError, TypeError):
+            pass
+        return _p
     except ImportError:
         raise ImportError(
             "Install one of:\n"
@@ -157,7 +167,17 @@ class CognitiveComplexityCalculator:
     def __init__(self, source_code: str):
         self.source_code = source_code
         self.parser = create_parser()
-        self.tree = self.parser.parse(bytes(source_code, "utf-8"))
+        try:
+
+            self.tree = self.parser.parse(bytes(source_code, "utf-8"))
+
+            self._parse_failed = False
+
+        except ValueError:
+
+            self.tree = None
+
+            self._parse_failed = True
         self.results = []
         self.details = []
 
@@ -188,6 +208,8 @@ class CognitiveComplexityCalculator:
 
     def calculate(self):
         self.results = []
+        if self._parse_failed or self.tree is None:
+            return self.results
         self._walk_top_level(self.tree.root_node)
         return self.results
 
@@ -294,36 +316,14 @@ class CognitiveComplexityCalculator:
 
     def _process_one_equation(self, node):
         """Process a single function equation (function or bind node).
-
-        A function with guards produces multiple `match` field children
-        (one per guard). They must be treated as a single guards sequence
-        so only the first guard receives nesting penalty."""
+        Guards are not in spec — visit each match plainly."""
         c = 0
-        match_children = []
-        local_binds_children = []
         for child in node.children:
             t = child.type
             if t == "match":
-                match_children.append(child)
+                c += self._visit(child, 0)
             elif t == "local_binds":
-                local_binds_children.append(child)
-
-        # Check if any match has guards
-        has_guards = any(
-            any(sub.type == "guards" for sub in m.children)
-            for m in match_children
-        )
-
-        if has_guards and len(match_children) > 1:
-            for idx, m in enumerate(match_children):
-                c += self._handle_match_as_nth_guard(m, 0, idx)
-        else:
-            for m in match_children:
-                c += self._visit(m, 0)
-
-        for lb in local_binds_children:
-            c += self._visit_local_binds(lb, 0)
-
+                c += self._visit_local_binds(child, 0)
         return c
 
     def _field_name(self, parent, child):
@@ -398,9 +398,10 @@ class CognitiveComplexityCalculator:
                     c += self._visit(child, nesting)
             return c
 
-        # ── B1 structural: list comprehension generator ──
+        # list_comprehension: removed (generator/filter not in spec).
+        # Just recurse — any if/case inside will still be counted normally.
         if t == "list_comprehension":
-            return self._handle_list_comprehension(node, nesting)
+            return self._visit_children(node, nesting)
 
         # ── B1 fundamental: logical operators ──
         if t == "infix":
@@ -449,71 +450,33 @@ class CognitiveComplexityCalculator:
     # ── match handling (function body or where bind body) ──
 
     def _handle_match(self, node, nesting):
-        """A match is the body of a function equation. It's either:
-            = expression          (simple)
-        or:
-            | guard1 = expr1
-            | guard2 = expr2      (multi-way with guards)
-
-        When guards are present, the expression body is at nesting+1
-        (because guards count as a structural construct that increases
-        nesting level)."""
+        """A match is the body of a function equation.
+        Guards are removed (not in spec). The body expression is visited
+        at the given nesting level."""
         c = 0
-        # Check for guards
-        has_guards = False
-        for child in node.children:
-            if child.type == "guards":
-                has_guards = True
-                c += self._handle_guards(child, nesting)
-
-        body_nesting = nesting + 1 if has_guards else nesting
-
         for child in node.children:
             t = child.type
             if t in ("guards", "|", "=", "where"):
                 continue
             if t == "local_binds":
-                c += self._visit_local_binds(child, body_nesting)
+                c += self._visit_local_binds(child, nesting)
                 continue
             fn = self._field_name(node, child)
             if fn == "expression":
-                c += self._visit(child, body_nesting)
-
+                c += self._visit(child, nesting)
         return c
 
     def _handle_guards(self, node, nesting):
-        """Handle a guards clause. The first guard is +1 structural (with
-        nesting); each additional guard is +1 hybrid (no nesting)."""
-        c = 0
-        guard_count = 0
-        for child in node.children:
-            if child.type == "boolean":
-                guard_count += 1
-                if guard_count == 1:
-                    inc = 1 + nesting
-                    self._add_detail(child, "guard", 1, nesting)
-                    c += inc
-                else:
-                    self._add_detail(child, "guard (additional)", 1, 0)
-                    c += 1
-                # Visit the guard expression for logical operator sequences
-                c += self._visit_children(child, nesting)
-        return c
+        """Removed: guards are not in White Paper Appendix B."""
+        return 0
 
     def _visit_alternative(self, alt_node, nesting):
-        """A case alternative: pattern -> expr, optionally with guards.
-
-        When an alternative has guards, the parser produces multiple
-        `match` children — one per guard. We must treat them as a single
-        guards sequence so only the FIRST guard receives nesting penalty
-        and subsequent guards are hybrid (+1, no nesting)."""
+        """A case alternative: pattern -> expr.
+        Guards (`| cond1 -> expr1 | cond2 -> expr2`) are removed
+        (not in White Paper Appendix B). All match children are visited
+        as plain expressions at the given nesting."""
         c = 0
-        match_children = [c for c in alt_node.children if c.type == "match"]
-        non_match_children = [c for c in alt_node.children
-                              if c.type not in ("match",)]
-
-        # Visit non-match children (pattern bindings, where clauses)
-        for child in non_match_children:
+        for child in alt_node.children:
             t = child.type
             fn = self._field_name(alt_node, child)
             if fn == "pattern":
@@ -524,21 +487,6 @@ class CognitiveComplexityCalculator:
                 c += self._visit_local_binds(child, nesting)
                 continue
             c += self._visit(child, nesting)
-
-        # Determine if any of the matches has guards (multi-guard alternative)
-        has_guards = any(
-            any(sub.type == "guards" for sub in m.children)
-            for m in match_children
-        )
-
-        if has_guards and len(match_children) > 1:
-            # Multi-guard alternative: treat as a single guards sequence
-            for idx, m in enumerate(match_children):
-                c += self._handle_match_as_nth_guard(m, nesting, idx)
-        else:
-            for m in match_children:
-                c += self._visit(m, nesting)
-
         return c
 
     def _handle_match_as_nth_guard(self, match_node, nesting, guard_index):

@@ -9,6 +9,7 @@ from lib.preprocess.preprocess import (HTMLParser, CodeSectionParser)
 from lib.code_complexity.cognitive_complexity import call_cognitive_complexity
 
 from run_project.calculate_src_complexity.options import RunnerOptions
+from tqdm import tqdm
 
 
 
@@ -44,15 +45,29 @@ class ModelRunner:
         src_list = self.extract_src_from_q(df[['id', 'body']].to_dict(orient='records'))
         self.save_file(src_list)
 
-        self.calculate_complexity()
+        not_conducted_list = self.calculate_complexity()
         self.save_option()
+        save_json(not_conducted_list, f'{self.save_dir_for_one}/not_conducted.json')
         save_many_to_one(self.save_dir_for_csv, self.save_dir_for_one, "all_complexity")
 
 
     def calculate_complexity(self):
         list_ = os.listdir(self.save_dir_for_src)
-        for i in list_:
-            call_cognitive_complexity(i,self.lang, self.save_dir_for_src, self.save_dir_for_csv)
+        pbar = tqdm(list_)
+        not_conducted_list = []
+
+        for i in pbar:
+            pbar.set_description(f"Processing: {i}")
+            result = call_cognitive_complexity(i, self.lang, self.save_dir_for_src, self.save_dir_for_csv)
+
+            if not result:
+                not_conducted_list.append(self.save_dir_for_src)
+
+        return not_conducted_list
+
+
+
+        
             
         print(f'[Saved] complexity files are saved in {self.save_dir_for_csv}')
 

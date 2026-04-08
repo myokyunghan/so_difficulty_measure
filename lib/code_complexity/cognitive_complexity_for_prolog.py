@@ -164,7 +164,12 @@ from tree_sitter import Language, Parser
 def create_parser():
     try:
         from tree_sitter_language_pack import get_parser
-        return get_parser("prolog")
+        _p = get_parser("prolog")
+        try:
+            _p.timeout_micros = 5_000_000
+        except (AttributeError, TypeError):
+            pass
+        return _p
     except Exception:
         pass
     so_paths = [
@@ -178,7 +183,12 @@ def create_parser():
                 lib = ctypes.cdll.LoadLibrary(so_path)
                 func = lib.tree_sitter_prolog
                 func.restype = ctypes.c_void_p
-                return Parser(Language(func()))
+                _p = Parser(Language(func()))
+                try:
+                    _p.timeout_micros = 5_000_000
+                except (AttributeError, TypeError):
+                    pass
+                return _p
             except Exception:
                 continue
     raise ImportError(
@@ -200,7 +210,17 @@ class CognitiveComplexityCalculator:
     def __init__(self, source_code: str):
         self.source_code = source_code
         self.parser = create_parser()
-        self.tree = self.parser.parse(bytes(source_code, "utf-8"))
+        try:
+
+            self.tree = self.parser.parse(bytes(source_code, "utf-8"))
+
+            self._parse_failed = False
+
+        except ValueError:
+
+            self.tree = None
+
+            self._parse_failed = True
         self.results = []
         self.details = []
 
@@ -234,6 +254,8 @@ class CognitiveComplexityCalculator:
 
     def calculate(self):
         self.results = []
+        if self._parse_failed or self.tree is None:
+            return self.results
         # Group clauses by predicate name/arity
         predicates = {}  # (name, arity) → list of clause_term nodes
         order = []  # preserve declaration order
@@ -372,11 +394,7 @@ class CognitiveComplexityCalculator:
         self.details = []
         complexity = 0
 
-        # Multi-clause predicate gets +1 (switch-equivalent, p.7)
-        if len(clauses) > 1:
-            self._add_detail(clauses[0], "multi-clause predicate", 1, 0)
-            complexity += 1
-
+        # Multi-clause +1 heuristic removed (not in White Paper Appendix B).
         # Each clause's body contributes its own complexity
         for clause in clauses:
             complexity += self._process_clause_body(clause)
@@ -659,44 +677,25 @@ class CognitiveComplexityCalculator:
         return c
 
     def _handle_findall_like(self, func_node, arg_list, name, nesting):
-        """findall(Template, Goal, List): iterate Goal solutions.
-        +1 structural with nesting, visit Goal at +1 nesting."""
+        """findall/bagof/setof/aggregate_all loop-like increment removed
+        (not in White Paper Appendix B). Visit all args at current nesting."""
         if arg_list is None:
             return 0
-        args = [c for c in arg_list.children
-                if c.is_named and c.type != "arg_list_separator"]
-        if len(args) < 2:
-            c = 0
-            for a in args:
+        c = 0
+        for a in arg_list.children:
+            if a.is_named and a.type != "arg_list_separator":
                 c += self._visit_goal(a, nesting)
-            return c
-
-        c = 1 + nesting
-        self._add_detail(func_node, name, 1, nesting)
-        # Template (arg 0) is just a term: no complexity
-        # Goal (arg 1) is the iterated goal: visit at +1 nesting
-        if len(args) >= 2:
-            c += self._visit_goal(args[1], nesting + 1)
-        # List (arg 2) is just a variable
         return c
 
     def _handle_forall(self, func_node, arg_list, nesting):
-        """forall(Cond, Action): for every Cond solution, Action must hold.
-        +1 structural with nesting; both Cond and Action visited at +1."""
+        """forall loop-like increment removed (not in White Paper
+        Appendix B). Visit all args at current nesting."""
         if arg_list is None:
             return 0
-        args = [c for c in arg_list.children
-                if c.is_named and c.type != "arg_list_separator"]
-        if len(args) < 2:
-            c = 0
-            for a in args:
+        c = 0
+        for a in arg_list.children:
+            if a.is_named and a.type != "arg_list_separator":
                 c += self._visit_goal(a, nesting)
-            return c
-
-        c = 1 + nesting
-        self._add_detail(func_node, "forall", 1, nesting)
-        c += self._visit_goal(args[0], nesting + 1)
-        c += self._visit_goal(args[1], nesting + 1)
         return c
 
 

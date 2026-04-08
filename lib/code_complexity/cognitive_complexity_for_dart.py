@@ -73,7 +73,12 @@ from tree_sitter import Language, Parser
 def create_parser():
     try:
         from tree_sitter_language_pack import get_parser
-        return get_parser("dart")
+        _p = get_parser("dart")
+        try:
+            _p.timeout_micros = 5_000_000
+        except (AttributeError, TypeError):
+            pass
+        return _p
     except Exception:
         pass
     so_paths = [
@@ -87,7 +92,12 @@ def create_parser():
                 lib = ctypes.cdll.LoadLibrary(so_path)
                 func = lib.tree_sitter_dart
                 func.restype = ctypes.c_void_p
-                return Parser(Language(func()))
+                _p = Parser(Language(func()))
+                try:
+                    _p.timeout_micros = 5_000_000
+                except (AttributeError, TypeError):
+                    pass
+                return _p
             except Exception:
                 continue
     raise ImportError(
@@ -103,7 +113,17 @@ class CognitiveComplexityCalculator:
     def __init__(self, source_code: str):
         self.source_code = source_code
         self.parser = create_parser()
-        self.tree = self.parser.parse(bytes(source_code, "utf-8"))
+        try:
+
+            self.tree = self.parser.parse(bytes(source_code, "utf-8"))
+
+            self._parse_failed = False
+
+        except ValueError:
+
+            self.tree = None
+
+            self._parse_failed = True
         self.results = []
         self.details = []
 
@@ -132,33 +152,11 @@ class CognitiveComplexityCalculator:
 
     def calculate(self):
         self.results = []
+        if self._parse_failed or self.tree is None:
+            return self.results
         self._walk_top_level(self.tree.root_node)
 
         # Bare code fallback
-        if not self.results:
-            wrapped = "void __top__() {\n" + self.source_code + "\n}"
-            try:
-                tree2 = self.parser.parse(bytes(wrapped, "utf-8"))
-                if not tree2.root_node.has_error:
-                    orig_src, orig_tree = self.source_code, self.tree
-                    self.source_code = wrapped
-                    self.tree = tree2
-                    self.results = []
-                    self._walk_top_level(tree2.root_node)
-                    self.source_code = orig_src
-                    self.tree = orig_tree
-                    for r in self.results:
-                        r["function"] = "<top-level>"
-                        r["start_line"] = max(1, r["start_line"] - 1)
-                        r["end_line"] = max(1, r["end_line"] - 1)
-                        r["details"] = [
-                            re.sub(r"  Line\s+(\d+):",
-                                   lambda m: f"  Line {max(1, int(m.group(1))-1):>4}:", d)
-                            if d.startswith("  Line ") else d
-                            for d in r["details"]
-                        ]
-            except Exception:
-                pass
         return self.results
 
     def _walk_top_level(self, node):

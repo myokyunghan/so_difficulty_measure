@@ -139,7 +139,12 @@ from tree_sitter import Language, Parser
 def create_parser():
     try:
         from tree_sitter_language_pack import get_parser
-        return get_parser("pascal")
+        _p = get_parser("pascal")
+        try:
+            _p.timeout_micros = 5_000_000
+        except (AttributeError, TypeError):
+            pass
+        return _p
     except Exception:
         pass
     so_paths = [
@@ -153,7 +158,12 @@ def create_parser():
                 lib = ctypes.cdll.LoadLibrary(so_path)
                 func = lib.tree_sitter_pascal
                 func.restype = ctypes.c_void_p
-                return Parser(Language(func()))
+                _p = Parser(Language(func()))
+                try:
+                    _p.timeout_micros = 5_000_000
+                except (AttributeError, TypeError):
+                    pass
+                return _p
             except Exception:
                 continue
     raise ImportError(
@@ -168,7 +178,17 @@ class CognitiveComplexityCalculator:
     def __init__(self, source_code: str):
         self.source_code = source_code
         self.parser = create_parser()
-        self.tree = self.parser.parse(bytes(source_code, "utf-8"))
+        try:
+
+            self.tree = self.parser.parse(bytes(source_code, "utf-8"))
+
+            self._parse_failed = False
+
+        except ValueError:
+
+            self.tree = None
+
+            self._parse_failed = True
         self.results = []
         self.details = []
 
@@ -205,6 +225,8 @@ class CognitiveComplexityCalculator:
 
     def calculate(self):
         self.results = []
+        if self._parse_failed or self.tree is None:
+            return self.results
         self._walk_top_level(self.tree.root_node)
         return self.results
 

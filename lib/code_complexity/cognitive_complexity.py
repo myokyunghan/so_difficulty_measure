@@ -16,14 +16,35 @@ def call_cognitive_complexity(file, lang, save_dir_for_src, save_dir_for_csv):
     new_nm = os.path.splitext(name)[0]
     new_file = f"{new_nm}.csv"
 
-    results = CALC_FUNC[lang](file_path)
-    total_complexity = sum(r['complexity'] for r in results)
-    pd.DataFrame([[new_file, new_file, total_complexity]], columns=['Path', 'File Name', 'Cognitive Complexity'])\
-        .to_csv(f'{save_dir_for_csv}/{new_file}')
+    if check_code(file_path, lang):
+        results = CALC_FUNC[lang](file_path)
+        total_complexity = sum(r['complexity'] for r in results)
+        pd.DataFrame([[new_file, new_file, total_complexity]], columns=['Path', 'File Name', 'Cognitive Complexity'])\
+            .to_csv(f'{save_dir_for_csv}/{new_file}')
+        return True
+    else :
+        return False
+    
+
+    
+
 
 
 def check_code(file_path, lang):
+    if lang == "assembly":
+        return True
     code = open_src(file_path)
     parser = CALC_PARSER[lang]()
-    tree = parser.parse(bytes(code, "utf-8"))
-    return not tree.root_node.has_error
+    
+    # 잘못된 입력에서 parser가 hang하는 것을 방지
+    try:
+        parser.timeout_micros = 5_000_000  # 5 seconds
+    except (AttributeError, TypeError):
+        pass  # 구버전 tree-sitter 미지원
+    
+    try:
+        tree = parser.parse(bytes(code, "utf-8"))
+        return not tree.root_node.has_error
+    except ValueError:
+        # parser timeout = 잘못된 입력
+        return False

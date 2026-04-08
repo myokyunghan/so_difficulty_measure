@@ -95,12 +95,22 @@ from tree_sitter import Language, Parser
 def create_parser():
     try:
         from tree_sitter_language_pack import get_parser
-        return get_parser("ruby")
+        _p = get_parser("ruby")
+        try:
+            _p.timeout_micros = 5_000_000
+        except (AttributeError, TypeError):
+            pass
+        return _p
     except Exception:
         pass
     try:
         import tree_sitter_ruby as _mod
-        return Parser(Language(_mod.language()))
+        _p = Parser(Language(_mod.language()))
+        try:
+            _p.timeout_micros = 5_000_000
+        except (AttributeError, TypeError):
+            pass
+        return _p
     except ImportError:
         raise ImportError(
             "Install one of:\n"
@@ -113,7 +123,17 @@ class CognitiveComplexityCalculator:
     def __init__(self, source_code: str):
         self.source_code = source_code
         self.parser = create_parser()
-        self.tree = self.parser.parse(bytes(source_code, "utf-8"))
+        try:
+
+            self.tree = self.parser.parse(bytes(source_code, "utf-8"))
+
+            self._parse_failed = False
+
+        except ValueError:
+
+            self.tree = None
+
+            self._parse_failed = True
         self.results = []
         self.details = []
 
@@ -144,35 +164,11 @@ class CognitiveComplexityCalculator:
 
     def calculate(self):
         self.results = []
+        if self._parse_failed or self.tree is None:
+            return self.results
         self._walk_top_level(self.tree.root_node)
 
         # Bare code fallback
-        if not self.results:
-            wrapped = "def __top__\n" + self.source_code + "\nend"
-            try:
-                tree2 = self.parser.parse(bytes(wrapped, "utf-8"))
-                if not tree2.root_node.has_error:
-                    orig_src, orig_tree = self.source_code, self.tree
-                    self.source_code = wrapped
-                    self.tree = tree2
-                    self.results = []
-                    self._walk_top_level(tree2.root_node)
-                    self.source_code = orig_src
-                    self.tree = orig_tree
-                    for r in self.results:
-                        r["function"] = "<top-level>"
-                        r["start_line"] = max(1, r["start_line"] - 1)
-                        r["end_line"] = max(1, r["end_line"] - 1)
-                        r["details"] = [
-                            re.sub(
-                                r"  Line\s+(\d+):",
-                                lambda m: f"  Line {max(1, int(m.group(1)) - 1):>4}:",
-                                d,
-                            ) if d.startswith("  Line ") else d
-                            for d in r["details"]
-                        ]
-            except Exception:
-                pass
 
         return self.results
 
@@ -235,40 +231,22 @@ class CognitiveComplexityCalculator:
         t = node.type
 
         # ── B1 structural: if ──
-        if t == "if":
+        # Distinguish if statement node from `if` keyword token: the
+        # statement has children, the keyword token is a leaf.
+        if t == "if" and node.child_count > 0:
             return self._handle_if_chain(node, nesting, is_elsif=False, kind="if")
 
         # ── B1 structural: unless (treated like if) ──
-        if t == "unless":
+        if t == "unless" and node.child_count > 0:
             return self._handle_if_chain(node, nesting, is_elsif=False, kind="unless")
 
-        # ── B1 structural: if/unless modifier (postfix) ──
-        if t == "if_modifier":
-            inc = 1 + nesting
-            self._add_detail(node, "if (modifier)", 1, nesting)
-            c = inc
-            cond = node.child_by_field_name("condition")
-            if cond:
-                c += self._visit(cond, nesting)
-            body = node.child_by_field_name("body")
-            if body:
-                c += self._visit(body, nesting + 1)
-            return c
-
-        if t == "unless_modifier":
-            inc = 1 + nesting
-            self._add_detail(node, "unless (modifier)", 1, nesting)
-            c = inc
-            cond = node.child_by_field_name("condition")
-            if cond:
-                c += self._visit(cond, nesting)
-            body = node.child_by_field_name("body")
-            if body:
-                c += self._visit(body, nesting + 1)
-            return c
+        # if_modifier / unless_modifier: removed (postfix forms not in
+        # White Paper Appendix B). Just recurse without counting.
+        if t in ("if_modifier", "unless_modifier"):
+            return self._visit_children(node, nesting)
 
         # ── B1 structural: while ──
-        if t == "while":
+        if t == "while" and node.child_count > 0:
             inc = 1 + nesting
             self._add_detail(node, "while", 1, nesting)
             c = inc
@@ -281,7 +259,7 @@ class CognitiveComplexityCalculator:
             return c
 
         # ── B1 structural: until (negated while) ──
-        if t == "until":
+        if t == "until" and node.child_count > 0:
             inc = 1 + nesting
             self._add_detail(node, "until", 1, nesting)
             c = inc
@@ -293,33 +271,12 @@ class CognitiveComplexityCalculator:
                 c += self._visit_children(body, nesting + 1)
             return c
 
-        # ── B1 structural: while_modifier / until_modifier (postfix loops) ──
-        if t == "while_modifier":
-            inc = 1 + nesting
-            self._add_detail(node, "while (modifier)", 1, nesting)
-            c = inc
-            cond = node.child_by_field_name("condition")
-            if cond:
-                c += self._visit(cond, nesting)
-            body = node.child_by_field_name("body")
-            if body:
-                c += self._visit(body, nesting + 1)
-            return c
-
-        if t == "until_modifier":
-            inc = 1 + nesting
-            self._add_detail(node, "until (modifier)", 1, nesting)
-            c = inc
-            cond = node.child_by_field_name("condition")
-            if cond:
-                c += self._visit(cond, nesting)
-            body = node.child_by_field_name("body")
-            if body:
-                c += self._visit(body, nesting + 1)
-            return c
+        # while_modifier / until_modifier: removed (postfix forms).
+        if t in ("while_modifier", "until_modifier"):
+            return self._visit_children(node, nesting)
 
         # ── B1 structural: for ──
-        if t == "for":
+        if t == "for" and node.child_count > 0:
             inc = 1 + nesting
             self._add_detail(node, "for", 1, nesting)
             c = inc

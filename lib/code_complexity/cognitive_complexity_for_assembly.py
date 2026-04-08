@@ -932,6 +932,15 @@ class CognitiveComplexityCalculator:
 
 # ── Public API ──
 
+def create_parser():
+    """No-op parser factory for API consistency with other language
+    calculators. Assembly doesn't use a tree-sitter parser — it does
+    line-based parsing directly inside the calculator. This function
+    exists so that `parser_loader.py` can import `create_parser` from
+    every language module uniformly."""
+    return None
+
+
 def calculate_file(filepath: str):
     with open(filepath, "r", encoding="utf-8") as f:
         return CognitiveComplexityCalculator(f.read()).calculate()

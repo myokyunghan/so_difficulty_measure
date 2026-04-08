@@ -158,7 +158,12 @@ from tree_sitter import Language, Parser
 def create_parser():
     try:
         from tree_sitter_language_pack import get_parser
-        return get_parser("perl")
+        _p = get_parser("perl")
+        try:
+            _p.timeout_micros = 5_000_000
+        except (AttributeError, TypeError):
+            pass
+        return _p
     except Exception:
         pass
     so_paths = [
@@ -172,7 +177,12 @@ def create_parser():
                 lib = ctypes.cdll.LoadLibrary(so_path)
                 func = lib.tree_sitter_perl
                 func.restype = ctypes.c_void_p
-                return Parser(Language(func()))
+                _p = Parser(Language(func()))
+                try:
+                    _p.timeout_micros = 5_000_000
+                except (AttributeError, TypeError):
+                    pass
+                return _p
             except Exception:
                 continue
     raise ImportError(
@@ -189,7 +199,17 @@ class CognitiveComplexityCalculator:
     def __init__(self, source_code: str):
         self.source_code = source_code
         self.parser = create_parser()
-        self.tree = self.parser.parse(bytes(source_code, "utf-8"))
+        try:
+
+            self.tree = self.parser.parse(bytes(source_code, "utf-8"))
+
+            self._parse_failed = False
+
+        except ValueError:
+
+            self.tree = None
+
+            self._parse_failed = True
         self.results = []
         self.details = []
 
@@ -241,6 +261,8 @@ class CognitiveComplexityCalculator:
 
     def calculate(self):
         self.results = []
+        if self._parse_failed or self.tree is None:
+            return self.results
         current_package = ""
         any_sub = False
         anon_subs_to_process = []  # collected anon subs from top-level
@@ -406,51 +428,36 @@ class CognitiveComplexityCalculator:
                 c += self._visit_children(block, nesting + 1)
             return c
 
-        # ── Postfix forms ──
+        # postfix_conditional_expression: removed (postfix forms not in
+        # White Paper Appendix B). Just recurse without counting.
         if t == "postfix_conditional_expression":
-            # `expr if cond` or `expr unless cond`
-            kw = "if" if self._has_child_of_type(node, "if") else "unless"
-            inc = 1 + nesting
-            self._add_detail(node, f"postfix {kw}", 1, nesting)
-            c = inc
-            cond = node.child_by_field_name("condition")
-            if cond:
-                c += self._visit(cond, nesting)
-            # Visit the body expression at nesting+1
-            for child in node.children:
-                if child.type in ("if", "unless"):
-                    continue
-                if child == cond:
-                    continue
-                # The expression is the first non-keyword non-condition child
-                c += self._visit(child, nesting + 1)
-                break
-            return c
+            return self._visit_children(node, nesting)
 
+        # postfix_loop_expression: do { } while/until is do-while (kept),
+        # but plain `expr while cond` postfix is removed.
         if t == "postfix_loop_expression":
-            # Could be `do { } while/until cond` (do-while form)
-            # or `expr while/until cond` (postfix while/until)
             has_do = False
             for child in node.children:
                 if child.type == "do_expression":
                     has_do = True
                     break
+            if not has_do:
+                # Plain postfix while/until — removed
+                return self._visit_children(node, nesting)
+            # do-while form — kept (semantically equivalent to do-while)
             kw = "while" if self._has_child_of_type(node, "while") else "until"
-            label = "do-while" if has_do else f"postfix {kw}"
             inc = 1 + nesting
-            self._add_detail(node, label, 1, nesting)
+            self._add_detail(node, "do-while", 1, nesting)
             c = inc
             cond = node.child_by_field_name("condition")
             if cond:
                 c += self._visit(cond, nesting)
-            # Visit the body (do_expression block, or the prefix expression)
             for child in node.children:
                 if child.type in ("while", "until"):
                     continue
                 if child == cond:
                     continue
                 if child.type == "do_expression":
-                    # Visit the do block at nesting+1
                     for sub in child.children:
                         if sub.type == "block":
                             c += self._visit_children(sub, nesting + 1)
@@ -458,21 +465,9 @@ class CognitiveComplexityCalculator:
                     c += self._visit(child, nesting + 1)
             return c
 
+        # postfix_for_expression: removed (postfix form).
         if t == "postfix_for_expression":
-            inc = 1 + nesting
-            self._add_detail(node, "postfix for", 1, nesting)
-            c = inc
-            list_expr = node.child_by_field_name("list")
-            if list_expr:
-                c += self._visit(list_expr, nesting)
-            for child in node.children:
-                if child.type == "for":
-                    continue
-                if child == list_expr:
-                    continue
-                c += self._visit(child, nesting + 1)
-                break
-            return c
+            return self._visit_children(node, nesting)
 
         # ── B1 structural: ternary ──
         if t == "conditional_expression":

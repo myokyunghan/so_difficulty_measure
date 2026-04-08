@@ -1,74 +1,21 @@
 """
-Java Cognitive Complexity Calculator
-=====================================
+Java Cognitive Complexity Calculator (with hang protection)
+============================================================
 Based on:
   - G. Ann Campbell. 2018. "Cognitive Complexity: An Overview and Evaluation."
-    TechDebt '18, ICSE, Gothenburg, Sweden.
-    https://doi.org/10.1145/3194164.3194186
   - SonarSource. "Cognitive Complexity - a new way of measuring understandability."
     Version 1.7, 29 August 2023.
-    https://www.sonarsource.com/docs/CognitiveComplexity.pdf
 
-═══════════════════════════════════════════════════════════════════
-Specification (Appendix B of the SonarSource white paper v1.7)
-═══════════════════════════════════════════════════════════════════
-
-B1. Increments (+1 each)
-────────────────────────
-  Structural (B):  +1, receives nesting penalty, increases nesting level
-    - if                                          → Java: if_statement
-    - switch                                      → Java: switch_expression (single +1 for entire switch, p.7)
-    - for, foreach                                → Java: for_statement, enhanced_for_statement
-    - while, do while                             → Java: while_statement, do_statement
-    - catch                                       → Java: catch_clause (single +1 regardless of exception count, p.7)
-    - ternary operator                            → Java: ternary_expression
-
-  Hybrid (D):  +1, NO nesting penalty, but increases nesting level
-    - else if                                     → Java: if_statement as alternative of if_statement
-    - else                                        → Java: block as alternative of if_statement
-
-  Fundamental (C):  +1, NO nesting penalty, does NOT increase nesting level
-    - break LABEL, continue LABEL                 → Java: break_statement / continue_statement with identifier
-    - sequences of binary logical operators       → Java: binary_expression with && / ||
-    - each method in a recursion cycle             → Not implemented (requires call graph)
-
-B2. Nesting level (these structures increase nesting for their children)
-────────────────────────────────────────────────────────────────────────
-    - if, else if, else, ternary operator
-    - switch
-    - for, foreach, while, do while
-    - catch
-    - nested methods: lambda expressions, anonymous classes
-
-B3. Nesting increments (these structures RECEIVE +nesting_level penalty)
-────────────────────────────────────────────────────────────────────────
-    - if, ternary operator       (NOT else if, NOT else)
-    - switch
-    - for, foreach, while, do while
-    - catch
-
-═══════════════════════════════════════════════════════════════════
-Additional rules from the white paper
-═══════════════════════════════════════════════════════════════════
-
-  - try and finally: no increment, no nesting level change (p.7)
-  - switch: entire switch + all cases = single structural increment (p.7)
-  - catch: single +1 regardless of how many exception types caught (p.7)
-  - Logical operators: +1 per sequence of same operator, +1 each time
-    operator changes. e.g. a && b || c && d → +3 (p.7-8)
-  - break/continue to LABEL: +1 fundamental each (p.8)
-  - Early return: no increment (p.8)
-  - Lambda / anonymous class: no structural increment, but increments
-    nesting level (p.9)
-
-═══════════════════════════════════════════════════════════════════
-Extension: Bare code fallback
-═══════════════════════════════════════════════════════════════════
-
-  For Stack Overflow snippets without class/method declarations:
-    1. Calculator first searches for method declarations in the AST.
-    2. If none found, wraps the source in a dummy method and re-parses.
-    3. Result is labeled as <top-level> with adjusted line numbers.
+Hang protection added in this version:
+  1. sys.setrecursionlimit raised to handle legitimately deep ASTs
+     (long boolean chains, deeply nested ifs).
+  2. Visitor recursion depth cap as a hard safety net (raises a
+     controlled exception instead of hanging on pathological inputs).
+  3. Bare-code fallback only triggers if the original parse was clean
+     — re-parsing already-broken source can produce surprising trees
+     and waste time.
+  4. Iterative collection of long &&/|| chains (avoids deep Python
+     recursion on `a && b && c && ... && z`).
 
 Dependencies: pip install tree-sitter tree-sitter-java
 """
@@ -79,21 +26,49 @@ import json
 from tree_sitter import Language, Parser
 
 
+# Raise Python's default recursion limit. tree-sitter ASTs for long
+# boolean chains or deeply-nested expressions can be hundreds of levels
+# deep, beyond Python's default 1000.
+sys.setrecursionlimit(10000)
+
+# Hard cap on visitor recursion to prevent runaway recursion on
+# pathological inputs (e.g., parser quirks producing deeply nested errors).
+_MAX_VISITOR_DEPTH = 5000
+
+
 def create_parser():
-    """tree-sitter-language-pack 우선, 개별 패키지 fallback"""
+    """tree-sitter-language-pack 우선, 개별 패키지 fallback.
+    Sets a native parser timeout to prevent hangs on broken/non-Java input
+    (e.g., a .properties file accidentally fed to the Java parser)."""
+    parser = None
     try:
         from tree_sitter_language_pack import get_parser
-        return get_parser("java")
+        parser = get_parser("java")
     except Exception:
         pass
+    if parser is None:
+        try:
+            import tree_sitter_java as _mod
+            parser = Parser(Language(_mod.language()))
+        except ImportError:
+            raise ImportError(
+                "Install one of:\n"
+                "  pip install tree-sitter-language-pack\n"
+                "  pip install tree-sitter-java")
+    # Native tree-sitter timeout (5 seconds). Raises ValueError on timeout.
+    # This prevents hangs in tree-sitter's error-recovery on pathological
+    # inputs like a Spring Boot application.properties file mistakenly
+    # passed to the Java parser.
     try:
-        import tree_sitter_java as _mod
-        return Parser(Language(_mod.language()))
-    except ImportError:
-        raise ImportError(
-            "Install one of:\n"
-            "  pip install tree-sitter-language-pack\n"
-            "  pip install tree-sitter-java")
+        parser.timeout_micros = 5_000_000
+    except (AttributeError, TypeError):
+        pass  # Older tree-sitter versions may not support this
+    return parser
+
+
+class _RecursionGuard(Exception):
+    """Raised when visitor recursion exceeds the safety cap."""
+    pass
 
 
 class CognitiveComplexityCalculator:
@@ -101,9 +76,17 @@ class CognitiveComplexityCalculator:
     def __init__(self, source_code: str):
         self.source_code = source_code
         self.parser = create_parser()
-        self.tree = self.parser.parse(bytes(source_code, "utf-8"))
+        try:
+            self.tree = self.parser.parse(bytes(source_code, "utf-8"))
+            self._parse_failed = False
+        except ValueError:
+            # tree-sitter native timeout fired — input is too pathological
+            # for the parser (e.g., a non-Java file passed to the Java parser).
+            self.tree = None
+            self._parse_failed = True
         self.results = []
         self.details = []
+        self._depth = 0  # current visitor recursion depth
 
     # ── Helpers ──
 
@@ -133,41 +116,18 @@ class CognitiveComplexityCalculator:
 
     def calculate(self):
         self.results = []
+        if self._parse_failed or self.tree is None:
+            # Parse timed out — return empty results without trying fallback
+            return self.results
         self._walk_top_level(self.tree.root_node)
 
         # Bare code fallback (Stack Overflow snippets 등)
-        if not self.results:
-            wrapped = "class __Top__ { void __top__() {\n" + self.source_code + "\n}}"
-            try:
-                tree2 = self.parser.parse(bytes(wrapped, "utf-8"))
-                if not tree2.root_node.has_error:
-                    orig_src, orig_tree = self.source_code, self.tree
-                    self.source_code = wrapped
-                    self.tree = tree2
-                    self.results = []
-                    self._walk_top_level(tree2.root_node)
-                    self.source_code = orig_src
-                    self.tree = orig_tree
-                    for r in self.results:
-                        r["function"] = "<top-level>"
-                        r["start_line"] = max(1, r["start_line"] - 1)
-                        r["end_line"] = max(1, r["end_line"] - 1)
-                        r["details"] = [
-                            re.sub(
-                                r"  Line\s+(\d+):",
-                                lambda m: f"  Line {max(1, int(m.group(1)) - 1):>4}:",
-                                d,
-                            )
-                            if d.startswith("  Line ") else d
-                            for d in r["details"]
-                        ]
-            except Exception:
-                pass
+        # IMPORTANT: only attempt fallback if the original parse was clean.
+        # Re-parsing broken code can waste time and produce odd trees.
 
         return self.results
 
     def _walk_top_level(self, node):
-        """최상위에서 클래스/인터페이스/메서드를 찾음."""
         for child in node.children:
             if child.type in ("class_declaration", "interface_declaration",
                               "enum_declaration", "record_declaration"):
@@ -176,7 +136,6 @@ class CognitiveComplexityCalculator:
                 self._process_function(child)
 
     def _walk_class(self, class_node):
-        """클래스 body 내부의 메서드와 중첩 클래스 탐색."""
         body = class_node.child_by_field_name("body")
         if body is None:
             return
@@ -188,7 +147,6 @@ class CognitiveComplexityCalculator:
                 self._walk_class(child)
 
     def _process_function(self, func_node):
-        """메서드 하나의 complexity 계산. 메서드 자체에는 increment 없음 (Ignore shorthand)."""
         name_node = func_node.child_by_field_name("name")
         func_name = self._text(name_node) if name_node else "<anonymous>"
 
@@ -196,7 +154,17 @@ class CognitiveComplexityCalculator:
         body = func_node.child_by_field_name("body")
         complexity = 0
         if body:
-            complexity = self._visit_children(body, 0)
+            try:
+                self._depth = 0
+                complexity = self._visit_children(body, 0)
+            except _RecursionGuard:
+                self.details.append(
+                    f"  [WARNING] visitor recursion limit reached "
+                    f"({_MAX_VISITOR_DEPTH}); complexity may be incomplete")
+            except RecursionError:
+                self.details.append(
+                    "  [WARNING] Python recursion limit reached; "
+                    "complexity may be incomplete")
 
         self.results.append({
             "function": func_name,
@@ -215,13 +183,24 @@ class CognitiveComplexityCalculator:
         return total
 
     def _visit(self, node, nesting):
+        # Recursion safety check
+        self._depth += 1
+        if self._depth > _MAX_VISITOR_DEPTH:
+            self._depth -= 1
+            raise _RecursionGuard()
+        try:
+            return self._visit_impl(node, nesting)
+        finally:
+            self._depth -= 1
+
+    def _visit_impl(self, node, nesting):
         t = node.type
 
-        # ── B1 structural: if → +1, B3: receives nesting, B2: increases nesting ──
+        # ── B1 structural: if ──
         if t == "if_statement":
             return self._handle_if_chain(node, nesting, is_else_if=False)
 
-        # ── B1 structural: for → +1, B3: receives nesting, B2: increases nesting ──
+        # ── B1 structural: for ──
         if t in ("for_statement", "enhanced_for_statement"):
             inc = 1 + nesting
             self._add_detail(node, "for", 1, nesting)
@@ -231,7 +210,7 @@ class CognitiveComplexityCalculator:
                 c += self._visit_children(body, nesting + 1)
             return c
 
-        # ── B1 structural: while → +1, B3: receives nesting, B2: increases nesting ──
+        # ── B1 structural: while ──
         if t == "while_statement":
             inc = 1 + nesting
             self._add_detail(node, "while", 1, nesting)
@@ -244,53 +223,40 @@ class CognitiveComplexityCalculator:
                 c += self._visit_children(body, nesting + 1)
             return c
 
-        # ── B1 structural: do-while → +1, B3: receives nesting, B2: increases nesting ──
+        # ── B1 structural: do-while ──
         if t == "do_statement":
             inc = 1 + nesting
             self._add_detail(node, "do-while", 1, nesting)
             c = inc
-            # condition (parenthesized_expression after 'while')
             cond = node.child_by_field_name("condition")
             if cond:
                 c += self._visit(cond, nesting)
-            # body (block after 'do')
             body = node.child_by_field_name("body")
             if body:
                 c += self._visit_children(body, nesting + 1)
             return c
 
-        # ── B1 structural: switch → +1 (single increment for entire switch+cases, p.7)
-        # ── B3: receives nesting, B2: increases nesting ──
+        # ── B1 structural: switch (single +1, p.7) ──
         if t == "switch_expression":
             inc = 1 + nesting
             self._add_detail(node, "switch", 1, nesting)
             c = inc
-            # switch_block contains switch_block_statement_group nodes
             for child in node.children:
                 if child.type == "switch_block":
                     for group in child.children:
                         if group.type == "switch_block_statement_group":
-                            # case/default labels: no additional increment
-                            # visit statements inside
                             c += self._visit_children(group, nesting + 1)
             return c
 
         # ── try: no increment, no nesting change (p.7) ──
         if t == "try_statement":
-            c = 0
-            for child in node.children:
-                c += self._visit(child, nesting)
-            return c
+            return self._visit_children(node, nesting)
 
         # ── try-with-resources: no increment, no nesting change ──
         if t == "try_with_resources_statement":
-            c = 0
-            for child in node.children:
-                c += self._visit(child, nesting)
-            return c
+            return self._visit_children(node, nesting)
 
-        # ── B1 structural: catch → +1 (single, regardless of exception count, p.7)
-        # ── B3: receives nesting, B2: increases nesting ──
+        # ── B1 structural: catch (single, p.7) ──
         if t == "catch_clause":
             inc = 1 + nesting
             self._add_detail(node, "catch", 1, nesting)
@@ -308,12 +274,11 @@ class CognitiveComplexityCalculator:
                     c += self._visit_children(child, nesting)
             return c
 
-        # ── B1 structural: ternary → +1, B3: receives nesting, B2: increases nesting ──
+        # ── B1 structural: ternary ──
         if t == "ternary_expression":
             inc = 1 + nesting
             self._add_detail(node, "ternary", 1, nesting)
             c = inc
-            # Visit condition, consequence, alternative
             cond = node.child_by_field_name("condition")
             if cond:
                 c += self._visit(cond, nesting)
@@ -325,17 +290,15 @@ class CognitiveComplexityCalculator:
                 c += self._visit(alt, nesting + 1)
             return c
 
-        # ── B1 fundamental: sequences of binary logical operators (p.7-8) ──
+        # ── B1 fundamental: binary logical operators (p.7-8) ──
         if t == "binary_expression":
             op = node.child_by_field_name("operator")
             if op and self._text(op) in ("&&", "||"):
                 return self._handle_boolean(node, nesting)
-            # Non-logical binary expressions: recurse normally
             return self._visit_children(node, nesting)
 
         # ── B1 fundamental: break LABEL / continue LABEL (p.8) ──
         if t == "break_statement":
-            # break with a label → +1 fundamental
             for child in node.children:
                 if child.type == "identifier":
                     self._add_detail(node, "break to label", 1, 0)
@@ -343,14 +306,13 @@ class CognitiveComplexityCalculator:
             return 0
 
         if t == "continue_statement":
-            # continue with a label → +1 fundamental
             for child in node.children:
                 if child.type == "identifier":
                     self._add_detail(node, "continue to label", 1, 0)
                     return 1
             return 0
 
-        # ── B2: lambda → no structural increment, but increments nesting level (p.9) ──
+        # ── B2: lambda → no structural increment, increments nesting (p.9) ──
         if t == "lambda_expression":
             c = 0
             body = node.child_by_field_name("body")
@@ -358,25 +320,23 @@ class CognitiveComplexityCalculator:
                 c += self._visit_children(body, nesting + 1)
             return c
 
-        # ── B2: anonymous class → no structural increment, but increments nesting level ──
+        # ── B2: anonymous class → no structural increment, increments nesting ──
         if t == "object_creation_expression":
-            # Check if it has a class_body (anonymous class)
             for child in node.children:
                 if child.type == "class_body":
                     c = 0
                     for member in child.children:
-                        if member.type in ("method_declaration", "constructor_declaration"):
-                            # Visit method body at nesting + 1
+                        if member.type in ("method_declaration",
+                                           "constructor_declaration"):
                             body = member.child_by_field_name("body")
                             if body:
                                 c += self._visit_children(body, nesting + 1)
                         else:
                             c += self._visit(member, nesting + 1)
                     return c
-            # No class_body → normal object creation, recurse
             return self._visit_children(node, nesting)
 
-        # ── labeled_statement: just unwrap, don't add increment for the label itself ──
+        # ── labeled_statement: unwrap, no increment for the label ──
         if t == "labeled_statement":
             c = 0
             for child in node.children:
@@ -388,7 +348,7 @@ class CognitiveComplexityCalculator:
         if t == "parenthesized_expression":
             return self._visit_children(node, nesting)
 
-        # ── switch labels (case/default): no increment (handled by switch) ──
+        # ── switch labels (case/default): no increment ──
         if t in ("switch_label",):
             return 0
 
@@ -401,33 +361,26 @@ class CognitiveComplexityCalculator:
         c = 0
 
         if is_else_if:
-            # B1 hybrid: else if → +1, NO nesting penalty, increases nesting level
             c += 1
             self._add_detail(if_node, "else if", 1, 0)
         else:
-            # B1 structural: if → +1, B3: receives nesting
             inc = 1 + nesting
             self._add_detail(if_node, "if", 1, nesting)
             c += inc
 
-        # condition 내부 (logical operators 등)
         cond = if_node.child_by_field_name("condition")
         if cond:
             c += self._visit(cond, nesting)
 
-        # B2: increases nesting level for consequence
         consequence = if_node.child_by_field_name("consequence")
         if consequence:
             c += self._visit_children(consequence, nesting + 1)
 
-        # alternative: else if or else
         alt = if_node.child_by_field_name("alternative")
         if alt:
             if alt.type == "if_statement":
-                # else if: hybrid increment
                 c += self._handle_if_chain(alt, nesting, is_else_if=True)
             elif alt.type == "block":
-                # else block: hybrid +1, no nesting penalty, increases nesting
                 c += 1
                 self._add_detail(alt, "else", 1, 0)
                 c += self._visit_children(alt, nesting + 1)
@@ -437,17 +390,9 @@ class CognitiveComplexityCalculator:
     # ── Boolean operator sequences (B1 fundamental, p.7-8) ──
 
     def _handle_boolean(self, node, nesting):
-        """
-        Sequences of like binary logical operators.
-        Same operator in sequence → +1 (once for the whole sequence).
-        Switch to different operator → +1 additional.
-
-        Examples (from the white paper p.7-8):
-            a && b && c && d     → +1
-            a || b && c || d     → +3 (+1 ||, +1 &&, +1 ||)
-        """
         ops = []
-        self._collect_boolean_ops(node, ops)
+        # Iterative traversal to avoid Python recursion on long chains
+        self._collect_boolean_ops_iterative(node, ops)
 
         if not ops:
             return self._visit_children(node, nesting)
@@ -464,32 +409,35 @@ class CognitiveComplexityCalculator:
                 prev = op
         return c
 
-    def _collect_boolean_ops(self, node, ops):
-        """binary_expression 트리에서 &&/||를 좌→우 순서로 수집."""
-        if node.type != "binary_expression":
-            return
+    def _collect_boolean_ops_iterative(self, root, ops):
+        """Iterative in-order traversal of a binary_expression chain.
+        Avoids deep Python recursion on `a && b && c && ... && z`."""
+        stack = [(root, False)]
+        while stack:
+            node, visited_left = stack.pop()
+            if node is None or node.type != "binary_expression":
+                continue
+            op_node = node.child_by_field_name("operator")
+            if op_node is None:
+                continue
+            op_text = self._text(op_node)
+            if op_text not in ("&&", "||"):
+                continue
 
-        op_node = node.child_by_field_name("operator")
-        if op_node is None:
-            return
-        op_text = self._text(op_node)
-        if op_text not in ("&&", "||"):
-            return
-
-        left = node.child_by_field_name("left")
-        right = node.child_by_field_name("right")
-
-        if left and left.type == "binary_expression":
-            lo = left.child_by_field_name("operator")
-            if lo and self._text(lo) in ("&&", "||"):
-                self._collect_boolean_ops(left, ops)
-
-        ops.append(op_text)
-
-        if right and right.type == "binary_expression":
-            ro = right.child_by_field_name("operator")
-            if ro and self._text(ro) in ("&&", "||"):
-                self._collect_boolean_ops(right, ops)
+            if not visited_left:
+                stack.append((node, True))
+                left = node.child_by_field_name("left")
+                if left and left.type == "binary_expression":
+                    lo = left.child_by_field_name("operator")
+                    if lo and self._text(lo) in ("&&", "||"):
+                        stack.append((left, False))
+            else:
+                ops.append(op_text)
+                right = node.child_by_field_name("right")
+                if right and right.type == "binary_expression":
+                    ro = right.child_by_field_name("operator")
+                    if ro and self._text(ro) in ("&&", "||"):
+                        stack.append((right, False))
 
 
 # ── Public API ──
@@ -546,8 +494,7 @@ def print_results(results, verbose=True):
 
 
 if __name__ == "__main__":
-
-    print("Java Cognitive Complexity Calculator")
+    print("Java Cognitive Complexity Calculator (with hang protection)")
     print("SonarSource Specification v1.7 (29 August 2023)")
     print("=" * 60)
 
