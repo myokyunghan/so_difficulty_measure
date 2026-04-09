@@ -184,6 +184,19 @@ from tree_sitter import Language, Parser
 
 
 def create_parser():
+    """Prefer individual tree_sitter_fortran package because
+    tree_sitter_language_pack may return a wrong/generic parser for
+    fortran on some installations."""
+    try:
+        import tree_sitter_fortran as _mod
+        _p = Parser(Language(_mod.language()))
+        try:
+            _p.timeout_micros = 5_000_000
+        except (AttributeError, TypeError):
+            pass
+        return _p
+    except ImportError:
+        pass
     try:
         from tree_sitter_language_pack import get_parser
         _p = get_parser("fortran")
@@ -194,23 +207,7 @@ def create_parser():
         return _p
     except Exception:
         pass
-    try:
-        import tree_sitter_fortran as _mod
-        _p = Parser(Language(_mod.language()))
-        try:
-            _p.timeout_micros = 5_000_000
-        except (AttributeError, TypeError):
-            pass
-        return _p
-    except ImportError:
-        raise ImportError(
-            "Install one of:\n"
-            "  pip install tree-sitter-language-pack\n"
-            "  pip install tree-sitter-fortran")
-
-
-# Logical operator names in tree-sitter-fortran
-# (the parser uses escaped dot syntax for the operator types)
+    raise ImportError("Install: pip install tree-sitter-fortran")
 _LOGICAL_OPS = frozenset([
     "\\.and\\.", "\\.or\\.", "\\.eqv\\.", "\\.neqv\\.", "\\.xor\\.",
     ".and.", ".or.", ".eqv.", ".neqv.", ".xor.",

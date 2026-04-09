@@ -87,17 +87,6 @@ from tree_sitter import Language, Parser
 
 def create_parser():
     """R parser 생성. tree-sitter-r shared library 필요."""
-    # 1. tree-sitter-language-pack
-    try:
-        from tree_sitter_language_pack import get_parser
-        _p = get_parser("r")
-        try:
-            _p.timeout_micros = 5_000_000
-        except (AttributeError, TypeError):
-            pass
-        return _p
-    except Exception:
-        pass
     # 2. Pre-built shared library
     so_paths = [
         os.path.join(os.path.dirname(__file__), "build", "r.so"),
@@ -120,6 +109,19 @@ def create_parser():
                 return _p
             except Exception:
                 continue
+    # Last-resort fallback to language_pack
+    # 1. tree-sitter-language-pack
+    try:
+        from tree_sitter_language_pack import get_parser
+        _p = get_parser("r")
+        try:
+            _p.timeout_micros = 5_000_000
+        except (AttributeError, TypeError):
+            pass
+        return _p
+    except Exception:
+        pass
+
     raise ImportError(
         "R parser not found. Build tree-sitter-r:\n"
         "  git clone https://github.com/r-lib/tree-sitter-r\n"

@@ -162,16 +162,6 @@ from tree_sitter import Language, Parser
 
 
 def create_parser():
-    try:
-        from tree_sitter_language_pack import get_parser
-        _p = get_parser("prolog")
-        try:
-            _p.timeout_micros = 5_000_000
-        except (AttributeError, TypeError):
-            pass
-        return _p
-    except Exception:
-        pass
     so_paths = [
         os.path.join(os.path.dirname(__file__), "build", "prolog.so"),
         os.path.join(os.path.dirname(__file__), "prolog.so"),
@@ -191,6 +181,18 @@ def create_parser():
                 return _p
             except Exception:
                 continue
+    # Last-resort fallback to language_pack
+    try:
+        from tree_sitter_language_pack import get_parser
+        _p = get_parser("prolog")
+        try:
+            _p.timeout_micros = 5_000_000
+        except (AttributeError, TypeError):
+            pass
+        return _p
+    except Exception:
+        pass
+
     raise ImportError(
         "Prolog parser not found. Build from source:\n"
         "  git clone https://github.com/foxyseta/tree-sitter-prolog.git\n"

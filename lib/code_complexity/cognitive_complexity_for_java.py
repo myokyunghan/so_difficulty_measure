@@ -37,35 +37,30 @@ _MAX_VISITOR_DEPTH = 5000
 
 
 def create_parser():
-    """tree-sitter-language-pack 우선, 개별 패키지 fallback.
-    Sets a native parser timeout to prevent hangs on broken/non-Java input
-    (e.g., a .properties file accidentally fed to the Java parser)."""
-    parser = None
+    """Prefer individual tree_sitter_java package because
+    tree_sitter_language_pack may return a wrong/generic parser for
+    java on some installations."""
+    try:
+        import tree_sitter_java as _mod
+        _p = Parser(Language(_mod.language()))
+        try:
+            _p.timeout_micros = 5_000_000
+        except (AttributeError, TypeError):
+            pass
+        return _p
+    except ImportError:
+        pass
     try:
         from tree_sitter_language_pack import get_parser
-        parser = get_parser("java")
+        _p = get_parser("java")
+        try:
+            _p.timeout_micros = 5_000_000
+        except (AttributeError, TypeError):
+            pass
+        return _p
     except Exception:
         pass
-    if parser is None:
-        try:
-            import tree_sitter_java as _mod
-            parser = Parser(Language(_mod.language()))
-        except ImportError:
-            raise ImportError(
-                "Install one of:\n"
-                "  pip install tree-sitter-language-pack\n"
-                "  pip install tree-sitter-java")
-    # Native tree-sitter timeout (5 seconds). Raises ValueError on timeout.
-    # This prevents hangs in tree-sitter's error-recovery on pathological
-    # inputs like a Spring Boot application.properties file mistakenly
-    # passed to the Java parser.
-    try:
-        parser.timeout_micros = 5_000_000
-    except (AttributeError, TypeError):
-        pass  # Older tree-sitter versions may not support this
-    return parser
-
-
+    raise ImportError("Install: pip install tree-sitter-java")
 class _RecursionGuard(Exception):
     """Raised when visitor recursion exceeds the safety cap."""
     pass

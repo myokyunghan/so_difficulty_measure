@@ -6,6 +6,20 @@ from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 from setting_for_sdm.constants import CONSTANTS
 import tqdm
+from glob import glob
+
+def load_all_files(data_dir):
+    """
+
+    Returns:
+        a list of dict
+    """
+    file_list = glob(f'{data_dir}/*.json')
+    to_return = []
+    for file in file_list:
+        loaded = load_json(file)
+        to_return += loaded
+    return to_return
 
 def load_json(path):
     """

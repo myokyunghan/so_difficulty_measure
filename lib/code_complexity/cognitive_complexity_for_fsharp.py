@@ -154,16 +154,6 @@ from tree_sitter import Language, Parser
 
 
 def create_parser():
-    try:
-        from tree_sitter_language_pack import get_parser
-        _p = get_parser("fsharp")
-        try:
-            _p.timeout_micros = 5_000_000
-        except (AttributeError, TypeError):
-            pass
-        return _p
-    except Exception:
-        pass
     so_paths = [
         os.path.join(os.path.dirname(__file__), "build", "fsharp.so"),
         os.path.join(os.path.dirname(__file__), "fsharp.so"),
@@ -183,6 +173,18 @@ def create_parser():
                 return _p
             except Exception:
                 continue
+    # Last-resort fallback to language_pack
+    try:
+        from tree_sitter_language_pack import get_parser
+        _p = get_parser("fsharp")
+        try:
+            _p.timeout_micros = 5_000_000
+        except (AttributeError, TypeError):
+            pass
+        return _p
+    except Exception:
+        pass
+
     raise ImportError(
         "F# parser not found. Build from npm:\n"
         "  npm install --ignore-scripts tree-sitter-fsharp\n"
@@ -271,6 +273,10 @@ class CognitiveComplexityCalculator:
                 self._walk_module_body(child, name_prefix)
             elif t == "value_declaration":
                 self._process_value_declaration(child, prefix)
+            elif t == "declaration_expression":
+                # ionide grammar: declaration_expression directly contains
+                # function_or_value_defn (no value_declaration wrapper)
+                self._process_value_declaration(child, prefix)
             elif t == "type_definition":
                 self._walk_type_definition(child, prefix)
 
@@ -278,6 +284,10 @@ class CognitiveComplexityCalculator:
         for child in module_node.children:
             t = child.type
             if t == "value_declaration":
+                self._process_value_declaration(child, prefix)
+            elif t == "declaration_expression":
+                # ionide grammar: declaration_expression directly contains
+                # function_or_value_defn (no value_declaration wrapper)
                 self._process_value_declaration(child, prefix)
             elif t == "type_definition":
                 self._walk_type_definition(child, prefix)

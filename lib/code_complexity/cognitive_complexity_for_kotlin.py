@@ -67,6 +67,19 @@ from tree_sitter import Language, Parser
 
 
 def create_parser():
+    """Prefer individual tree_sitter_kotlin package because
+    tree_sitter_language_pack may return a wrong/generic parser for
+    kotlin on some installations."""
+    try:
+        import tree_sitter_kotlin as _mod
+        _p = Parser(Language(_mod.language()))
+        try:
+            _p.timeout_micros = 5_000_000
+        except (AttributeError, TypeError):
+            pass
+        return _p
+    except ImportError:
+        pass
     try:
         from tree_sitter_language_pack import get_parser
         _p = get_parser("kotlin")
@@ -77,18 +90,7 @@ def create_parser():
         return _p
     except Exception:
         pass
-    try:
-        import tree_sitter_kotlin as _mod
-        _p = Parser(Language(_mod.language()))
-        try:
-            _p.timeout_micros = 5_000_000
-        except (AttributeError, TypeError):
-            pass
-        return _p
-    except ImportError:
-        raise ImportError("Install: pip install tree-sitter-kotlin")
-
-
+    raise ImportError("Install: pip install tree-sitter-kotlin")
 class CognitiveComplexityCalculator:
 
     def __init__(self, source_code: str):
@@ -175,7 +177,7 @@ class CognitiveComplexityCalculator:
         name_node = func_node.child_by_field_name("name")
         if name_node is None:
             for child in func_node.children:
-                if child.type == "identifier":
+                if child.type in ("identifier", "simple_identifier"):
                     name_node = child
                     break
         func_name = self._text(name_node) if name_node else "<anonymous>"
@@ -216,6 +218,10 @@ class CognitiveComplexityCalculator:
     def _visit(self, node, nesting):
         t = node.type
 
+        # control_structure_body / statements: pure wrappers, just recurse
+        if t in ("control_structure_body", "statements"):
+            return self._visit_children(node, nesting)
+
         # ── B1 structural: if (if_expression) ──
         if t == "if_expression":
             return self._handle_if_chain(node, nesting, is_else_if=False)
@@ -226,7 +232,7 @@ class CognitiveComplexityCalculator:
             self._add_detail(node, "for", 1, nesting)
             c = inc
             for child in node.children:
-                if child.type == "block":
+                if child.type in ("block", "control_structure_body", "statements"):
                     c += self._visit_children(child, nesting + 1)
             return c
 
@@ -239,7 +245,7 @@ class CognitiveComplexityCalculator:
             if cond:
                 c += self._visit(cond, nesting)
             for child in node.children:
-                if child.type == "block":
+                if child.type in ("block", "control_structure_body", "statements"):
                     c += self._visit_children(child, nesting + 1)
             return c
 
@@ -252,7 +258,7 @@ class CognitiveComplexityCalculator:
             if cond:
                 c += self._visit(cond, nesting)
             for child in node.children:
-                if child.type == "block":
+                if child.type in ("block", "control_structure_body", "statements"):
                     c += self._visit_children(child, nesting + 1)
             return c
 
@@ -362,7 +368,26 @@ class CognitiveComplexityCalculator:
         if cond:
             c += self._visit(cond, nesting)
 
-        # Walk children: consequence before 'else', alternative after
+        # Use field-based access for consequence/alternative when available
+        # (works for both grammars: 'block' and 'control_structure_body')
+        consequence = if_node.child_by_field_name("consequence")
+        alternative = if_node.child_by_field_name("alternative")
+
+        if consequence is not None:
+            # Visit consequence body (control_structure_body unwraps automatically)
+            c += self._visit_children(consequence, nesting + 1)
+
+            if alternative is not None:
+                if alternative.type == "if_expression":
+                    c += self._handle_if_chain(alternative, nesting, is_else_if=True)
+                else:
+                    c += 1
+                    self._add_detail(alternative, "else", 1, 0)
+                    c += self._visit_children(alternative, nesting + 1)
+            return c
+
+        # Fallback: legacy children-based traversal for grammars without
+        # consequence/alternative fields
         children = list(if_node.children)
         else_idx = None
         for i, child in enumerate(children):
@@ -370,24 +395,21 @@ class CognitiveComplexityCalculator:
                 else_idx = i
                 break
 
-        # Consequence blocks before else
         for child in children[:else_idx] if else_idx else children:
-            if child.type == "block":
+            if child.type in ("block", "control_structure_body", "statements"):
                 c += self._visit_children(child, nesting + 1)
 
-        # Alternative after else
         if else_idx is not None:
             for child in children[else_idx + 1:]:
                 if child.type == "if_expression":
                     c += self._handle_if_chain(child, nesting, is_else_if=True)
                     break
-                elif child.type == "block":
+                elif child.type in ("block", "control_structure_body", "statements"):
                     c += 1
                     self._add_detail(child, "else", 1, 0)
                     c += self._visit_children(child, nesting + 1)
                     break
                 elif child.type not in ("{", "}"):
-                    # Single expression else (e.g. val x = if (a) 1 else 0)
                     c += 1
                     self._add_detail(child, "else", 1, 0)
                     c += self._visit(child, nesting + 1)

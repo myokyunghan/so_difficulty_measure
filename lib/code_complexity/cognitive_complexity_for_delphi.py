@@ -137,16 +137,6 @@ from tree_sitter import Language, Parser
 
 
 def create_parser():
-    try:
-        from tree_sitter_language_pack import get_parser
-        _p = get_parser("pascal")
-        try:
-            _p.timeout_micros = 5_000_000
-        except (AttributeError, TypeError):
-            pass
-        return _p
-    except Exception:
-        pass
     so_paths = [
         os.path.join(os.path.dirname(__file__), "build", "pascal.so"),
         os.path.join(os.path.dirname(__file__), "pascal.so"),
@@ -166,6 +156,18 @@ def create_parser():
                 return _p
             except Exception:
                 continue
+    # Last-resort fallback to language_pack
+    try:
+        from tree_sitter_language_pack import get_parser
+        _p = get_parser("pascal")
+        try:
+            _p.timeout_micros = 5_000_000
+        except (AttributeError, TypeError):
+            pass
+        return _p
+    except Exception:
+        pass
+
     raise ImportError(
         "Pascal parser not found. Build from npm:\n"
         "  npm install --ignore-scripts tree-sitter-pascal\n"
@@ -237,6 +239,11 @@ class CognitiveComplexityCalculator:
                 self._walk_program(child)
             elif t == "unit":
                 self._walk_unit(child)
+            elif t == "defProc":
+                # Some grammars (e.g., the language_pack pascal grammar)
+                # place defProc directly under the root without a
+                # program/unit wrapper.
+                self._process_function(child)
 
     def _walk_program(self, program_node):
         # Walk all defProc and the main block
@@ -285,7 +292,14 @@ class CognitiveComplexityCalculator:
 
         # A defProc has: header (declProc), optional local (declVars/defProc),
         # body (block).
+        # Try field-based access first; fall back to type-based search.
         body = func_node.child_by_field_name("body")
+        if body is None:
+            for child in func_node.children:
+                if child.type == "block":
+                    body = child
+                    break
+
         local = None
         for child in func_node.children:
             fn = self._field_name(func_node, child)
@@ -317,8 +331,20 @@ class CognitiveComplexityCalculator:
     def _extract_function_name(self, func_node):
         header = func_node.child_by_field_name("header")
         if header is None:
+            # Fall back: find declProc child (same role as header)
+            for child in func_node.children:
+                if child.type == "declProc":
+                    header = child
+                    break
+        if header is None:
             return "<anonymous>"
         name_node = header.child_by_field_name("name")
+        if name_node is None:
+            # Fall back: find first identifier child
+            for child in header.children:
+                if child.type == "identifier":
+                    name_node = child
+                    break
         if name_node is None:
             return "<anonymous>"
         if name_node.type == "identifier":
@@ -356,6 +382,14 @@ class CognitiveComplexityCalculator:
             then_part = node.child_by_field_name("then")
             if then_part:
                 c += self._visit(then_part, nesting + 1)
+            else:
+                # Fallback: no field-based access. Visit all children
+                # except keyword tokens and the condition expression.
+                for child in node.children:
+                    ct = child.type
+                    if ct in ("kIf", "kThen", "kElse", ";"):
+                        continue
+                    c += self._visit(child, nesting + 1)
             return c
 
         # ── B1 structural: ifElse (with else) ──
@@ -396,6 +430,15 @@ class CognitiveComplexityCalculator:
             body = node.child_by_field_name("body")
             if body:
                 c += self._visit(body, nesting + 1)
+            else:
+                # Fallback: no field-based access. Visit all children
+                # except keyword tokens and the loop init/bounds.
+                for child in node.children:
+                    ct = child.type
+                    if ct in ("kFor", "kTo", "kDownto", "kDo", "kIn",
+                              "assignment", "literalNumber", "identifier", ";"):
+                        continue
+                    c += self._visit(child, nesting + 1)
             return c
 
         # ── B1 structural: foreach (for-in) ──

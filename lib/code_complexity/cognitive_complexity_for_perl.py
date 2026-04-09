@@ -156,16 +156,6 @@ from tree_sitter import Language, Parser
 
 
 def create_parser():
-    try:
-        from tree_sitter_language_pack import get_parser
-        _p = get_parser("perl")
-        try:
-            _p.timeout_micros = 5_000_000
-        except (AttributeError, TypeError):
-            pass
-        return _p
-    except Exception:
-        pass
     so_paths = [
         os.path.join(os.path.dirname(__file__), "build", "perl.so"),
         os.path.join(os.path.dirname(__file__), "perl.so"),
@@ -185,6 +175,18 @@ def create_parser():
                 return _p
             except Exception:
                 continue
+    # Last-resort fallback to language_pack
+    try:
+        from tree_sitter_language_pack import get_parser
+        _p = get_parser("perl")
+        try:
+            _p.timeout_micros = 5_000_000
+        except (AttributeError, TypeError):
+            pass
+        return _p
+    except Exception:
+        pass
+
     raise ImportError(
         "Perl parser not found. Build from npm:\n"
         "  npm install --ignore-scripts tree-sitter-perl\n"

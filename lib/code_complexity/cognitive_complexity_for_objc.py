@@ -1,6 +1,6 @@
 """
-C# Cognitive Complexity Calculator
-====================================
+Objective-C Cognitive Complexity Calculator
+=============================================
 Based on:
   - G. Ann Campbell. 2018. "Cognitive Complexity: An Overview and Evaluation."
     TechDebt '18, ICSE, Gothenburg, Sweden.
@@ -10,68 +10,99 @@ Based on:
     https://www.sonarsource.com/docs/CognitiveComplexity.pdf
 
 ═══════════════════════════════════════════════════════════════════
-Specification (Appendix B of the SonarSource white paper v1.7)
+Specification (Appendix B, adapted for Objective-C)
 ═══════════════════════════════════════════════════════════════════
 
 B1. Increments (+1 each)
 ────────────────────────
   Structural (B):  +1, receives nesting penalty, increases nesting level
-    - if                                  → C#: if_statement
-    - switch                              → C#: switch_statement (single +1 for entire switch, p.7)
-    - for, foreach                        → C#: for_statement, foreach_statement
-    - while, do while                     → C#: while_statement, do_statement
-    - catch                               → C#: catch_clause (single +1 regardless of type, p.7)
-    - ternary operator                    → C#: conditional_expression (a ? b : c)
+    - if                                  → ObjC: if_statement
+    - switch                              → ObjC: switch_statement (single +1, p.7)
+    - for                                 → ObjC: for_statement (classic and for-in)
+    - while                               → ObjC: while_statement
+    - do while                            → ObjC: do_statement
+    - @catch                              → ObjC: catch_clause (single +1, p.7)
+    - ternary operator                    → ObjC: conditional_expression
 
   Hybrid (D):  +1, NO nesting penalty, but increases nesting level
-    - else if                             → C#: if_statement as alternative of if_statement
-    - else                                → C#: block as alternative of if_statement
+    - else if                             → ObjC: if_statement as alternative
+    - else                                → ObjC: compound_statement as alternative
 
   Fundamental (C):  +1, NO nesting penalty, does NOT increase nesting level
-    - goto                                → C#: goto_statement
-    - sequences of binary logical ops     → C#: binary_expression with && / ||
-    - each method in a recursion cycle    → Not implemented (requires call graph)
+    - goto                                → ObjC: goto_statement (inherited from C)
+    - sequences of binary logical ops     → ObjC: binary_expression with && / ||
+    - each method in a recursion cycle    → Not implemented
 
-  Ignored (Ignore shorthand, p.6):
-    - null-coalescing operators (??, ?.)  → No increment
+  Not applicable in Objective-C:
+    - break LABEL, continue LABEL         → ObjC has no labeled break/continue
+                                            (uses goto instead)
 
 B2. Nesting level (these structures increase nesting for their children)
 ────────────────────────────────────────────────────────────────────────
-    - if, else if, else, ternary operator
+    - if, else if, else, ternary
     - switch
-    - for, foreach, while, do while
-    - catch
-    - nested methods: lambda_expression, anonymous_method_expression,
-      local_function_statement
+    - for, while, do while
+    - @catch
+    - nested functions: block_literal (Objective-C blocks ^{ ... })
+    - nested method/function definitions
 
 B3. Nesting increments (these structures RECEIVE +nesting_level penalty)
 ────────────────────────────────────────────────────────────────────────
-    - if, ternary operator       (NOT else if, NOT else)
+    - if, ternary       (NOT else if, NOT else)
     - switch
-    - for, foreach, while, do while
-    - catch
+    - for, while, do while
+    - @catch
 
 ═══════════════════════════════════════════════════════════════════
-Additional rules from the white paper
+Objective-C-specific notes
 ═══════════════════════════════════════════════════════════════════
 
-  - try and finally: no increment, no nesting level change (p.7)
-  - switch: entire switch + all cases = single structural increment (p.7)
-  - catch: single +1 regardless of exception types (p.7)
-  - goto: +1 fundamental (p.8)
-  - Null-coalescing (??, ?.): ignored (p.6, "Ignore shorthand")
-  - Early return: no increment (p.8)
+  - Objective-C is a strict superset of C, so all C control structures
+    apply: if/else, for (classic), while, do-while, switch, goto, ternary.
+
+  - Objective-C adds these constructs:
+
+    • @interface / @implementation / @protocol — class declarations.
+      Walked recursively to find member methods.
+
+    • method_definition — `- (void)foo` (instance) or `+ (void)bar` (class).
+      Multi-part selectors like `setName:age:` produce multiple identifier
+      children separated by `method_parameter` nodes. We reconstruct the
+      full selector for the function name.
+
+    • @try / @catch / @finally — exception handling. Treated like Java's
+      try/catch/finally per the spec: try and finally are ignored,
+      @catch = +1 structural (p.7).
+
+    • for-in loops: `for (NSString *s in items)` — same for_statement node
+      as classic for, no special handling needed.
+
+    • @synchronized(obj) { ... } — synchronization block. Lock acquisition,
+      not control flow. Does not break linear flow per the spec, so the
+      block contents are visited but no increment is added.
+
+    • @autoreleasepool { ... } — memory management block. Same: visit
+      contents without increment.
+
+    • block_literal — ObjC blocks like `^(int x) { ... }` or `^{ ... }`.
+      These are anonymous functions / closures. Treated as nested function
+      per p.9: no structural increment, increases nesting level.
+
+    • message_expression — `[obj method]` syntax. Just an expression, no
+      increment. Trailing block arguments inside messages still get the
+      block_literal nesting treatment.
+
+    • property_declaration, protocol_declaration — declarations only,
+      no executable code, no complexity.
 
 ═══════════════════════════════════════════════════════════════════
 Extension: Bare code fallback
 ═══════════════════════════════════════════════════════════════════
 
-  For Stack Overflow snippets without class/method declarations:
-    1. Calculator first searches for method declarations in the AST.
-    2. If none found, wraps the source in a dummy method and re-parses.
-    3. Result is labeled as <top-level> with adjusted line numbers.
+  For snippets without function definitions:
+    Wraps in `void __top__() { ... }` and re-parses.
 
-Dependencies: pip install tree-sitter tree-sitter-c-sharp
+Dependencies: pip install tree-sitter tree-sitter-objc
 """
 import os
 import re
@@ -81,11 +112,11 @@ from tree_sitter import Language, Parser
 
 
 def create_parser():
-    """Prefer individual tree_sitter_c_sharp package because
+    """Prefer individual tree_sitter_objc package because
     tree_sitter_language_pack may return a wrong/generic parser for
-    csharp on some installations."""
+    objc on some installations."""
     try:
-        import tree_sitter_c_sharp as _mod
+        import tree_sitter_objc as _mod
         _p = Parser(Language(_mod.language()))
         try:
             _p.timeout_micros = 5_000_000
@@ -96,7 +127,7 @@ def create_parser():
         pass
     try:
         from tree_sitter_language_pack import get_parser
-        _p = get_parser("csharp")
+        _p = get_parser("objc")
         try:
             _p.timeout_micros = 5_000_000
         except (AttributeError, TypeError):
@@ -104,7 +135,7 @@ def create_parser():
         return _p
     except Exception:
         pass
-    raise ImportError("Install: pip install tree-sitter-c-sharp")
+    raise ImportError("Install: pip install tree-sitter-objc")
 class CognitiveComplexityCalculator:
 
     def __init__(self, source_code: str):
@@ -156,48 +187,42 @@ class CognitiveComplexityCalculator:
         self._walk_top_level(self.tree.root_node)
 
         # Bare code fallback
+
         return self.results
 
     def _walk_top_level(self, node):
         for child in node.children:
-            if child.type in ("class_declaration", "struct_declaration",
-                              "interface_declaration", "record_declaration",
-                              "enum_declaration"):
-                self._walk_class(child)
-            elif child.type == "namespace_declaration":
-                body = child.child_by_field_name("body")
-                if body:
-                    self._walk_top_level(body)
-            elif child.type == "file_scoped_namespace_declaration":
-                self._walk_top_level(child)
-            elif child.type in ("method_declaration", "constructor_declaration"):
-                self._process_function(child)
-            elif child.type == "global_statement":
-                for sub in child.children:
-                    if sub.type == "local_function_statement":
-                        self._process_function(sub)
+            t = child.type
+            if t == "function_definition":
+                self._process_c_function(child)
+            elif t in ("class_implementation", "category_implementation"):
+                self._walk_implementation(child)
+            elif t in ("class_interface", "category_interface",
+                       "protocol_declaration"):
+                # Interface/protocol declarations have no executable code,
+                # only method declarations (no bodies). Skip.
+                pass
 
-    def _walk_class(self, class_node):
-        body = class_node.child_by_field_name("body")
-        if body is None:
-            return
-        for child in body.children:
-            if child.type in ("method_declaration", "constructor_declaration"):
-                self._process_function(child)
-            elif child.type in ("class_declaration", "struct_declaration",
-                                "interface_declaration", "record_declaration"):
-                self._walk_class(child)
-            elif child.type == "property_declaration":
-                # property accessors (get/set with bodies)
-                for sub in child.children:
-                    if sub.type == "accessor_list":
-                        for acc in sub.children:
-                            if acc.type == "accessor_declaration":
-                                self._process_function(acc)
+    def _walk_implementation(self, impl_node):
+        # Get class name for prefixing
+        class_name = ""
+        for child in impl_node.children:
+            if child.type == "identifier" and not class_name:
+                class_name = self._text(child)
+                break
 
-    def _process_function(self, func_node):
-        name_node = func_node.child_by_field_name("name")
-        func_name = self._text(name_node) if name_node else "<anonymous>"
+        for child in impl_node.children:
+            if child.type == "implementation_definition":
+                for sub in child.children:
+                    if sub.type == "method_definition":
+                        self._process_method(sub, class_name)
+                    elif sub.type == "function_definition":
+                        self._process_c_function(sub)
+
+    def _process_c_function(self, func_node):
+        """Process a C-style function (function_definition)."""
+        declarator = func_node.child_by_field_name("declarator")
+        func_name = self._extract_c_func_name(declarator) if declarator else "<anonymous>"
 
         self.details = []
         body = func_node.child_by_field_name("body")
@@ -210,6 +235,89 @@ class CognitiveComplexityCalculator:
             "complexity": complexity,
             "start_line": func_node.start_point[0] + 1,
             "end_line": func_node.end_point[0] + 1,
+            "details": list(self.details),
+        })
+
+    def _extract_c_func_name(self, declarator):
+        """Recursively extract identifier name from a function_declarator."""
+        if declarator is None:
+            return "<anonymous>"
+        if declarator.type == "identifier":
+            return self._text(declarator)
+        if declarator.type == "function_declarator":
+            inner = declarator.child_by_field_name("declarator")
+            return self._extract_c_func_name(inner)
+        if declarator.type == "pointer_declarator":
+            inner = declarator.child_by_field_name("declarator")
+            return self._extract_c_func_name(inner)
+        # Fallback: search for first identifier
+        for child in declarator.children:
+            if child.type == "identifier":
+                return self._text(child)
+        return "<anonymous>"
+
+    def _process_method(self, method_node, class_name=""):
+        """Process an Objective-C method_definition (- or +).
+        Reconstructs the multi-part selector if present."""
+        # Determine + (class method) or - (instance method)
+        prefix = "-"
+        for child in method_node.children:
+            if child.type == "+":
+                prefix = "+"
+                break
+            if child.type == "-":
+                prefix = "-"
+                break
+
+        # Extract selector parts. For `setName:age:`, the children include
+        # multiple identifier nodes interleaved with method_parameter nodes.
+        # The first identifier after method_type is the first selector part.
+        selector_parts = []
+        seen_method_type = False
+        last_was_method_param = False
+        for child in method_node.children:
+            t = child.type
+            if t == "method_type":
+                seen_method_type = True
+                continue
+            if not seen_method_type:
+                continue
+            if t == "identifier":
+                # First identifier OR identifier following a method_parameter
+                # = a selector keyword
+                if not selector_parts or last_was_method_param:
+                    selector_parts.append(self._text(child))
+                last_was_method_param = False
+            elif t == "method_parameter":
+                # method_parameter ends with `:` so the selector keyword
+                # before it gets a colon
+                if selector_parts:
+                    selector_parts[-1] = selector_parts[-1] + ":"
+                last_was_method_param = True
+
+        selector = "".join(selector_parts) if selector_parts else "<anonymous>"
+        if class_name:
+            func_name = f"{prefix}[{class_name} {selector}]"
+        else:
+            func_name = f"{prefix}{selector}"
+
+        self.details = []
+        # Body is a compound_statement child
+        body = None
+        for child in method_node.children:
+            if child.type == "compound_statement":
+                body = child
+                break
+
+        complexity = 0
+        if body:
+            complexity = self._visit_children(body, 0)
+
+        self.results.append({
+            "function": func_name,
+            "complexity": complexity,
+            "start_line": method_node.start_point[0] + 1,
+            "end_line": method_node.end_point[0] + 1,
             "details": list(self.details),
         })
 
@@ -228,15 +336,20 @@ class CognitiveComplexityCalculator:
         if t == "if_statement":
             return self._handle_if_chain(node, nesting, is_else_if=False)
 
-        # ── B1 structural: for / foreach ──
-        if t in ("for_statement", "foreach_statement"):
-            kw = "for" if t == "for_statement" else "foreach"
+        # ── B1 structural: for (classic and for-in) ──
+        if t == "for_statement":
             inc = 1 + nesting
-            self._add_detail(node, kw, 1, nesting)
+            self._add_detail(node, "for", 1, nesting)
             c = inc
             body = node.child_by_field_name("body")
             if body:
                 c += self._visit_children(body, nesting + 1)
+            else:
+                # Body may not have a field name; find compound_statement child
+                for child in node.children:
+                    if child.type == "compound_statement":
+                        c += self._visit_children(child, nesting + 1)
+                        break
             return c
 
         # ── B1 structural: while ──
@@ -272,10 +385,17 @@ class CognitiveComplexityCalculator:
             c = inc
             body = node.child_by_field_name("body")
             if body:
+                # Visit case_statement bodies; no per-case increment
                 for child in body.children:
-                    if child.type == "switch_section":
-                        # No additional increment for case/default labels
-                        c += self._visit_children(child, nesting + 1)
+                    if child.type == "case_statement":
+                        for sub in child.children:
+                            # Skip the case label (case/default keyword,
+                            # case value, and trailing colon)
+                            if sub.type in ("case", "default", ":",
+                                            "number_literal", "char_literal",
+                                            "string_literal", "identifier"):
+                                continue
+                            c += self._visit(sub, nesting + 1)
             return c
 
         # ── try: no increment, no nesting change (p.7) ──
@@ -285,24 +405,25 @@ class CognitiveComplexityCalculator:
                 c += self._visit(child, nesting)
             return c
 
-        # ── B1 structural: catch → +1 (p.7) ──
+        # ── B1 structural: @catch (p.7) ──
         if t == "catch_clause":
             inc = 1 + nesting
-            self._add_detail(node, "catch", 1, nesting)
+            self._add_detail(node, "@catch", 1, nesting)
             c = inc
-            body = node.child_by_field_name("body")
-            if body:
-                c += self._visit_children(body, nesting + 1)
+            for child in node.children:
+                if child.type == "compound_statement":
+                    c += self._visit_children(child, nesting + 1)
+                    break
             return c
 
-        # ── finally: no increment, no nesting change (p.7) ──
+        # ── @finally: no increment (p.7) ──
         if t == "finally_clause":
             for child in node.children:
-                if child.type == "block":
+                if child.type == "compound_statement":
                     return self._visit_children(child, nesting)
             return 0
 
-        # ── B1 structural: ternary (conditional_expression) ──
+        # ── B1 structural: ternary ──
         if t == "conditional_expression":
             inc = 1 + nesting
             self._add_detail(node, "ternary", 1, nesting)
@@ -318,6 +439,11 @@ class CognitiveComplexityCalculator:
                 c += self._visit(alt, nesting + 1)
             return c
 
+        # ── B1 fundamental: goto (p.8) ──
+        if t == "goto_statement":
+            self._add_detail(node, "goto", 1, 0)
+            return 1
+
         # ── B1 fundamental: logical operators (p.7-8) ──
         if t == "binary_expression":
             op = node.child_by_field_name("operator")
@@ -325,39 +451,46 @@ class CognitiveComplexityCalculator:
                 return self._handle_boolean(node, nesting)
             return self._visit_children(node, nesting)
 
-        # ── B1 fundamental: goto (p.8) ──
-        if t == "goto_statement":
-            self._add_detail(node, "goto", 1, 0)
-            return 1
+        # ── B2: block_literal → no increment, increases nesting (p.9) ──
+        if t == "block_literal":
+            c = 0
+            for child in node.children:
+                if child.type == "compound_statement":
+                    c += self._visit_children(child, nesting + 1)
+                    break
+            return c
 
-        # ── B2: lambda_expression → no increment, increases nesting (p.9) ──
-        if t == "lambda_expression":
+        # ── B2: nested function_definition → nesting (p.9) ──
+        if t == "function_definition":
             c = 0
             body = node.child_by_field_name("body")
             if body:
                 c += self._visit_children(body, nesting + 1)
             return c
 
-        # ── B2: anonymous_method_expression → no increment, increases nesting ──
-        if t == "anonymous_method_expression":
+        # ── @synchronized: visit body without increment ──
+        if t == "synchronized_statement":
             c = 0
-            body = node.child_by_field_name("body")
-            if body:
-                c += self._visit_children(body, nesting + 1)
+            for child in node.children:
+                if child.type == "compound_statement":
+                    c += self._visit_children(child, nesting)
+                else:
+                    c += self._visit(child, nesting)
             return c
 
-        # ── B2: local_function_statement (nested method) → increases nesting ──
-        if t == "local_function_statement":
-            c = 0
-            body = node.child_by_field_name("body")
-            if body:
-                c += self._visit_children(body, nesting + 1)
-            return c
+        # ── compound_statement: may be a regular block or @autoreleasepool ──
+        # @autoreleasepool { ... } parses as compound_statement with
+        # @autoreleasepool keyword child. Either way: visit children at same nesting.
+        if t == "compound_statement":
+            return self._visit_children(node, nesting)
 
-        # ── switch labels: no increment ──
-        if t in ("case", "default", "switch_label", "case_switch_label",
-                  "default_switch_label", "constant_pattern"):
-            return 0
+        # ── labeled_statement: unwrap (label itself is not incremented) ──
+        if t == "labeled_statement":
+            c = 0
+            for child in node.children:
+                if child.type not in ("statement_identifier", ":"):
+                    c += self._visit(child, nesting)
+            return c
 
         # ── parenthesized_expression: unwrap ──
         if t == "parenthesized_expression":
@@ -370,6 +503,7 @@ class CognitiveComplexityCalculator:
 
     def _handle_if_chain(self, if_node, nesting, is_else_if):
         c = 0
+
         if is_else_if:
             c += 1
             self._add_detail(if_node, "else if", 1, 0)
@@ -378,22 +512,35 @@ class CognitiveComplexityCalculator:
             self._add_detail(if_node, "if", 1, nesting)
             c += inc
 
+        # condition
         cond = if_node.child_by_field_name("condition")
         if cond:
             c += self._visit(cond, nesting)
 
+        # consequence
         consequence = if_node.child_by_field_name("consequence")
         if consequence:
-            c += self._visit_children(consequence, nesting + 1)
+            c += self._visit_children(consequence, nesting + 1) \
+                if consequence.type == "compound_statement" \
+                else self._visit(consequence, nesting + 1)
 
+        # alternative: else_clause containing if_statement (else if) or
+        # compound_statement (else)
         alt = if_node.child_by_field_name("alternative")
-        if alt:
-            if alt.type == "if_statement":
-                c += self._handle_if_chain(alt, nesting, is_else_if=True)
-            elif alt.type == "block":
-                c += 1
-                self._add_detail(alt, "else", 1, 0)
-                c += self._visit_children(alt, nesting + 1)
+        if alt and alt.type == "else_clause":
+            for child in alt.children:
+                if child.type == "if_statement":
+                    c += self._handle_if_chain(child, nesting, is_else_if=True)
+                elif child.type == "compound_statement":
+                    c += 1
+                    self._add_detail(child, "else", 1, 0)
+                    c += self._visit_children(child, nesting + 1)
+                elif child.type not in ("else",):
+                    # Single-statement else (no braces)
+                    c += 1
+                    self._add_detail(child, "else", 1, 0)
+                    c += self._visit(child, nesting + 1)
+
         return c
 
     # ── Boolean operator sequences (B1 fundamental, p.7-8) ──
@@ -403,12 +550,14 @@ class CognitiveComplexityCalculator:
         self._collect_boolean_ops(node, ops)
         if not ops:
             return self._visit_children(node, nesting)
+
         c = 0
         prev = None
         for op in ops:
             if prev is None or op != prev:
                 c += 1
-                desc = (f"logical sequence '{op}'" if prev is None
+                desc = (f"logical sequence '{op}'"
+                        if prev is None
                         else f"logical change to '{op}'")
                 self._add_detail_raw(desc, 1)
                 prev = op
@@ -423,13 +572,17 @@ class CognitiveComplexityCalculator:
         op_text = self._text(op_node)
         if op_text not in ("&&", "||"):
             return
+
         left = node.child_by_field_name("left")
         right = node.child_by_field_name("right")
+
         if left and left.type == "binary_expression":
             lo = left.child_by_field_name("operator")
             if lo and self._text(lo) in ("&&", "||"):
                 self._collect_boolean_ops(left, ops)
+
         ops.append(op_text)
+
         if right and right.type == "binary_expression":
             ro = right.child_by_field_name("operator")
             if ro and self._text(ro) in ("&&", "||"):
@@ -440,17 +593,18 @@ class CognitiveComplexityCalculator:
 
 def calculate_file(filepath: str):
     with open(filepath, "r", encoding="utf-8") as f:
-        source = f.read()
-    return CognitiveComplexityCalculator(source).calculate()
+        return CognitiveComplexityCalculator(f.read()).calculate()
+
 
 def calculate_source(source_code: str):
     return CognitiveComplexityCalculator(source_code).calculate()
+
 
 def calculate_directory(dirpath: str):
     all_results = []
     for root, dirs, files in os.walk(dirpath):
         for fname in sorted(files):
-            if fname.endswith(".cs"):
+            if fname.endswith((".m", ".mm", ".h")):
                 fpath = os.path.join(root, fname)
                 try:
                     results = calculate_file(fpath)
@@ -460,6 +614,7 @@ def calculate_directory(dirpath: str):
                 except Exception as e:
                     print(f"Error processing {fpath}: {e}")
     return all_results
+
 
 def print_results(results, verbose=True):
     total = 0
@@ -476,20 +631,23 @@ def print_results(results, verbose=True):
             print("Details:")
             for d in r["details"]:
                 print(d)
+
     print(f"\n{'='*60}")
     print(f"Total Cognitive Complexity: {total}")
     print(f"Number of functions: {len(results)}")
     if results:
         print(f"Average per function: {total / len(results):.1f}")
 
+
 if __name__ == "__main__":
-    print("C# Cognitive Complexity Calculator")
+    print("Objective-C Cognitive Complexity Calculator")
     print("SonarSource Specification v1.7 (29 August 2023)")
     print("=" * 60)
 
     if len(sys.argv) > 1:
         path = sys.argv[1]
         verbose = "-v" in sys.argv or "--verbose" in sys.argv
+
         if os.path.isdir(path):
             results = calculate_directory(path)
         elif os.path.isfile(path):
@@ -497,10 +655,15 @@ if __name__ == "__main__":
         else:
             print(f"Not found: {path}")
             sys.exit(1)
+
         if "--json" in sys.argv:
-            output = [{"file": r.get("file",""), "function": r["function"],
-                       "complexity": r["complexity"], "start_line": r["start_line"],
-                       "end_line": r["end_line"]} for r in results]
+            output = [{
+                "file": r.get("file", ""),
+                "function": r["function"],
+                "complexity": r["complexity"],
+                "start_line": r["start_line"],
+                "end_line": r["end_line"],
+            } for r in results]
             print(json.dumps(output, indent=2))
         else:
             print_results(results, verbose)
