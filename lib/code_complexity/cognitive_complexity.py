@@ -18,9 +18,23 @@ def call_cognitive_complexity(file, lang, save_dir_for_src, save_dir_for_csv):
 
     if check_code(file_path, lang):
         results = CALC_FUNC[lang](file_path)
-        total_complexity = sum(r['complexity'] for r in results)
-        pd.DataFrame([[new_file, new_file, total_complexity]], columns=['Path', 'File Name', 'Cognitive Complexity'])\
-            .to_csv(f'{save_dir_for_csv}/{new_file}')
+        complexities = [r['complexity'] for r in results]
+
+        if not complexities:
+            return False
+
+        pd.DataFrame(
+            [[new_file, new_file, c] for c in complexities],
+            columns=['Path', 'File Name', 'Cognitive Complexity']
+        ).to_csv(f'{save_dir_for_csv}/{new_file}')
+
+
+        # total_complexity = sum(complexities)
+        # max_complexity = max(complexities) if complexities else 0
+        # n_functions = len(complexities)
+        # avg_complexity = total_complexity / n_functions if complexities else 0
+        # pd.DataFrame([[new_file, new_file, dict(total=total_complexity, max=max_complexity, avg=avg_complexity, raw_complexities=complexities)]], columns=['Path', 'File Name', 'Cognitive Complexity'])\
+        #     .to_csv(f'{save_dir_for_csv}/{new_file}')
         return True
     else :
         return False

@@ -134,42 +134,6 @@ class Annotation_Operation:
         return diff_s_idx
 
 
-    # def write_prompt(self, e_f_dict) : 
-    #     few_shot_n = self.few_shot_n
-        
-    #     # write system prompt & examples
-    #     for eval_id, fewshot_dict in e_f_dict.items() : 
-        
-    #         for sc_idx, fewshot_id_list in fewshot_dict.items() : 
-    #             message = []
-    #             message.append({"role": "system", "content": self.sys_prompt})
-    #             self.eval_q_list.append(eval_id)
-
-    #             for fewshot_id in fewshot_id_list : 
-
-    #                 q_string = self.df.loc[self.df['id'] == fewshot_id, 'question'].iloc[0]
-    #                 a_string = self.df.loc[self.df['id'] == fewshot_id, 'answer'].iloc[0]
-    #                 t_string = self.annoate_target.loc[self.annoate_target['id']==eval_id, 'question'].iloc[0]
-                    
-    #                 q_prompt = """\nHere is the examples of question\n"""
-    #                 q_prompt = q_prompt + q_string
-
-    #                 message.append({"role": "user", "content": q_prompt})
-    #                 message.append({"role": "assistant", "content": a_string})
-                    
-    #             target_post="""\nHere is the target post. Answer the "Difficulty Level".\n"""
-    #             target_post = target_post+"""\n<target_post>\n"""
-    #             target_post = target_post+t_string+'\n'
-    #             target_post = target_post+"""</target_post>\n"""
-                
-    #             message.append({"role": "user", "content": target_post})
-                
-    #             if self.chk_max_length(message) :
-    #                 e_f_dict[eval_id][sc_idx] = self.set_fewshot_example(few_shot_n)
-    #                 self.write_prompt(e_f_dict)
-    #             else :
-    #                 self.message_list.append(message)
-
     def write_prompt(self, e_f_dict):
 
         for eval_id, fewshot_dict in e_f_dict.items():
@@ -220,53 +184,59 @@ class Annotation_Operation:
         sql = 'INSERT INTO tt_posts_difficulty_done  VALUES %s'
         db_if.execute_bulk_values(sql, data_list)     
 
-
-
-    # def calc_acc_for_v(self, llm_model, few_shot_n, q_src_yn):
-    #     self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v start!')
-        
-    #     for idx, message in tqdm(enumerate(self.message_list)):
-    #         tmp = []
-    #         self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v, ask VLLM start!')
-    #         response = self.vllm.llm.chat(message, sampling_params=self.vllm.params) 
-    #         self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v, ask VLLM end!')
-    #         tmp.append(self.eval_q_list[idx])
-    #         tmp.append(response[0].outputs[0].text)
-    #         self.result.append(tmp)
-    #     result_df = pd.DataFrame(self.result, columns = ['id', 'result'])
-    #     result_df = pd.merge(self.annoate_target[['ver', 'creationdate', 'id']], result_df,on = 'id')
-    #     self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v, save result! {self.save_dir}/{self.date}.csv')
-    #     result_df.to_csv(f'{self.save_dir}/{self.date}.csv')
-    #     self.insert_result(result_df)
-    #     return result_df
-
-
     def calc_acc_for_v(self, llm_model, few_shot_n, q_src_yn):
         self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v start!')
     
-        for item in tqdm(self.message_list):
-            tmp = []
-            
-            eval_id = item["eval_id"]
-            message = item["message"]
+        batch_size = 5
 
-            self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v, ask VLLM start!')
-            response = self.vllm.llm.chat(message, sampling_params=self.vllm.params) 
-            self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v, ask VLLM end!')
+        for i in tqdm(range(0, len(self.message_list), batch_size)):
+            batch = self.message_list[i:i+batch_size]
             
-            tmp.append(eval_id)
-            tmp.append(response[0].outputs[0].text)
-            
-            self.result.append(tmp)
+            messages_batch = [item["message"] for item in batch]
+            eval_ids = [item["eval_id"] for item in batch]
+
+            self.logger.info(f'VLLM batch start! {i+1}~{i+len(batch)}/{len(self.message_list)}')
+            responses = self.vllm.llm.chat(messages_batch, sampling_params=self.vllm.params)
+            self.logger.info(f'VLLM batch end!')
+
+            for eval_id, response in zip(eval_ids, responses):
+                self.result.append([eval_id, response.outputs[0].text])
 
         result_df = pd.DataFrame(self.result, columns=['id', 'result'])
         result_df = pd.merge(self.annoate_target[['ver', 'creationdate', 'id']], result_df, on='id')
 
-        self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v, save result! {self.save_dir}/{self.date}.csv')
+        self.logger.info(f'save result! {self.save_dir}/{self.date}.csv')
         result_df.to_csv(f'{self.save_dir}/{self.date}.csv')
 
         self.insert_result(result_df)
         return result_df
+    
+    # def calc_acc_for_v(self, llm_model, few_shot_n, q_src_yn):
+    #     self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v start!')
+    
+    #     for item in tqdm(self.message_list):
+    #         tmp = []
+            
+    #         eval_id = item["eval_id"]
+    #         message = item["message"]
+
+    #         self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v, ask VLLM start!')
+    #         response = self.vllm.llm.chat(message, sampling_params=self.vllm.params) 
+    #         self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v, ask VLLM end!')
+            
+    #         tmp.append(eval_id)
+    #         tmp.append(response[0].outputs[0].text)
+            
+    #         self.result.append(tmp)
+
+    #     result_df = pd.DataFrame(self.result, columns=['id', 'result'])
+    #     result_df = pd.merge(self.annoate_target[['ver', 'creationdate', 'id']], result_df, on='id')
+
+    #     self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v, save result! {self.save_dir}/{self.date}.csv')
+    #     result_df.to_csv(f'{self.save_dir}/{self.date}.csv')
+
+    #     self.insert_result(result_df)
+    #     return result_df
         # /home/mghan/sopjt/git/venv_stackoverflow_src/bin/python /home/mghan/sopjt/git/stackoverflow_src_2425/difficulty/automate_annotation/main.py ver50000
  
     def calc_acc_for_l(self):           
