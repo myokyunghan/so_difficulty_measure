@@ -3,11 +3,22 @@ import os
 import shutil
 import pandas as pd
 from pathlib import Path
-from concurrent.futures import ProcessPoolExecutor
 from setting_for_sdm.constants import CONSTANTS
 import tqdm
 from glob import glob
+import sys
 
+class Tee:
+    def __init__(self, *streams):
+        self.streams = streams
+    def write(self, msg):
+        for s in self.streams:
+            s.write(msg)
+            s.flush()
+    def flush(self):
+        for s in self.streams:
+            s.flush()
+            
 def load_all_files(data_dir):
     """
 
@@ -52,6 +63,22 @@ def save_json(to_save, path):
     with open(path, 'w') as file:
         json.dump(to_save, file, ensure_ascii=False, indent=4)
 
+def save_jsonl(to_save, path):
+    """
+
+    Args:
+        to_save: a dict or a list of dict
+        path: a str
+
+    Returns:
+        None
+    """
+    if CONSTANTS.verbose_loading:
+        print(f"[Saving...] {path}")
+    with open(path, 'w', encoding='utf-8') as file:
+        for row in to_save:
+            file.write(json.dumps(row, ensure_ascii=False) + '\n')
+
 
 def save_src_as_file(to_save, path, lang):
     """
@@ -65,7 +92,7 @@ def save_src_as_file(to_save, path, lang):
     """
     if CONSTANTS.verbose_loading:
         print(f"[Saving...] {path}")
-    with open(f'{path}.{CONSTANTS.src_extend[lang]}', 'wb') as file:
+    with open(f'{path}.{CONSTANTS.LANG_INFO[lang][0]}', 'wb') as file:
         file.write(to_save.encode())
 
 
@@ -120,18 +147,42 @@ def load_df(path, col_list):
     df = pd.concat(dfs, ignore_index=True)         
     return df
 
-
 def save_many_to_one(path, save_file_path, save_file_name):
     print(f'[src path] {path}')
     print(f'[target path] {save_file_path}')
-    files = [f for f in Path(path).glob("*.csv")]
-    with ProcessPoolExecutor() as ex:
-        df = pd.concat(ex.map(pd.read_csv, files), ignore_index=True)
-    df.to_parquet(f'{save_file_path}/{save_file_name}.parquet')
-    print(f'[Saved] All complexity files are saved in {save_file_path}/{save_file_name}.parquet')
+    files = sorted(glob(f'{path}/*.jsonl'))
 
+    with open(f'{save_file_path}/{save_file_name}.jsonl', 'wb') as out:
+        for p in files:
+            with open(p, 'rb') as inp:
+                shutil.copyfileobj(inp, out)
 
+    print(f'[Saved] {save_file_path}/{save_file_name}.jsonl')
+
+    
 
 def open_src(filepath: str):
     with open(filepath, "r", encoding="utf-8") as f:
         return f.read()
+    
+def read_complexity_parquet(option_dict):
+    df = pd.read_parquet(f'{option_dict["save_dir"]}/data/all_complexity.parquet')
+    df['id'] = df['path'].apply(lambda x : x.split('_')[1].split('.')[0])
+    df[['id', 'cognitive_complexity']] = df[['id', 'cognitive_complexity']].astype(int)
+    return df
+
+def read_complexity_jsonl(option_dict):
+    df = pd.read_json(f'{option_dict["save_dir"]}/data/all_complexity.jsonl', lines=True)
+    df['id'] = df['file_name'].apply(lambda x : x.split('_')[1].split('.')[0])
+    df[['id', 'cyclomatic_complexity']] = df[['id', 'cyclomatic_complexity']].astype(int)
+    return df
+
+def open_log(filepath):
+    log_file = open(filepath, "w", encoding="utf-8")
+    tee = Tee(sys.stdout, log_file)
+    sys.stdout = tee          # print 출력을 가로챔
+    return log_file
+
+def close_log(log_file):
+    sys.stdout = sys.__stdout__  # 원래 stdout 복원
+    log_file.close()

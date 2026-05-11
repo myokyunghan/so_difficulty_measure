@@ -3,10 +3,13 @@ import pandas as pd
 import pprint
 
 from setting_for_sdm.date_setting import Date_Setting
+from setting_for_sdm.constants import CONSTANTS
 
 from lib.utils.file_io import (save_json, create_dir, load_df, save_src_as_file, save_many_to_one)
 from lib.preprocess.preprocess import (HTMLParser, CodeSectionParser)
 from lib.code_complexity.cognitive_complexity import call_cognitive_complexity
+from lib.code_complexity.cyclomatic_complexity import call_cyclomatic_complexity
+from lib.code_complexity.rust_cognitive_complexity import call_rust_cognitive_complexity
 
 from run_project.calculate_src_complexity.options import RunnerOptions
 from tqdm import tqdm
@@ -24,11 +27,12 @@ class ModelRunner:
         create_dir(f'{self.data_dir}')
 
         self.save_dir_for_src = f"{self.runner_opt.user_opt['save_dir']}/data/src"
-        self.save_dir_for_csv = f"{self.runner_opt.user_opt['save_dir']}/data/csv"
+        self.save_dir_for_jsonl = f"{self.runner_opt.user_opt['save_dir']}/data/jsonl"
         self.save_dir_for_one = f"{self.runner_opt.user_opt['save_dir']}/data"
 
         self.startdate = Date_Setting[self.runner_opt.user_opt['year_range']]["start_date"]
         self.end_date = Date_Setting[self.runner_opt.user_opt['year_range']]["end_date"]
+        self.metric = self.runner_opt.user_opt['metric']
 
 
     def __call__(self):
@@ -36,7 +40,7 @@ class ModelRunner:
 
     def run(self):
         create_dir(f'{self.save_dir_for_src}')
-        create_dir(f'{self.save_dir_for_csv}')
+        create_dir(f'{self.save_dir_for_jsonl}')
 
         # load data
         print(self.data_dir)
@@ -48,7 +52,7 @@ class ModelRunner:
         not_conducted_list = self.calculate_complexity()
         self.save_option()
         save_json(not_conducted_list, f'{self.save_dir_for_one}/not_conducted.json')
-        save_many_to_one(self.save_dir_for_csv, self.save_dir_for_one, "all_complexity")
+        save_many_to_one(self.save_dir_for_jsonl, self.save_dir_for_one, "all_complexity")
 
 
     def calculate_complexity(self):
@@ -56,20 +60,42 @@ class ModelRunner:
         pbar = tqdm(list_)
         not_conducted_list = []
 
-        for i in pbar:
-            pbar.set_description(f"Processing: {i}")
-            result = call_cognitive_complexity(i, self.lang, self.save_dir_for_src, self.save_dir_for_csv)
+        if self.check_availability() : 
+            for i in pbar:
+                pbar.set_description(f"Processing: {i}")
+                if self.metric == "cognitive_complexity":
+                    result = call_cognitive_complexity(i, 
+                                                    self.lang, 
+                                                    self.save_dir_for_src, 
+                                                    self.save_dir_for_jsonl)
+                elif self.metric == "cyclomatic_complexity":
+                    result = call_cyclomatic_complexity(i, 
+                                                        self.lang,   
+                                                        self.save_dir_for_src, 
+                                                        self.save_dir_for_jsonl)   
+                elif self.metric == "rust_cognitive_complexity": 
+                    result = call_rust_cognitive_complexity(i, 
+                                                            self.lang,   
+                                                            self.save_dir_for_src, 
+                                                            self.save_dir_for_jsonl)
+                if not result:
+                    not_conducted_list.append(i)
 
-            if not result:
-                not_conducted_list.append(self.save_dir_for_src)
+            return not_conducted_list
+        else : 
+            print(f"Sorry, {self.metric} is not supported for {self.lang}.")
+            return []  # 지원하지 않는 경우 빈 리스트 반환
 
-        return not_conducted_list
+    def check_availability(self):
+        if self.metric == "cognitive_complexity":
+            return self.lang in CONSTANTS.COGNITIVE_COMPLEXITY_SUPPORTED_LANGS
+        elif self.metric == "cyclomatic_complexity":
+            return self.lang in CONSTANTS.CYCLOMATIC_COMPLEXITY_SUPPORTED_LANGS
+        elif self.metric == "rust_cognitive_complexity":
+            return self.lang in CONSTANTS.RCA_SUPPORTED_LANGS
+        else:
+            return False
 
-
-
-        
-            
-        print(f'[Saved] complexity files are saved in {self.save_dir_for_csv}')
 
     def save_file(self, list_, params=None):
         df_src = pd.DataFrame(list_).explode('src', ignore_index=True)

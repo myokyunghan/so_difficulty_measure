@@ -1,0 +1,9 @@
+[ITS....] load_and_prepare r language
+
+데이터 로드 완료: 260 rows
+  Pre:  104 obs
+  Post: 156 obs
+
+============================================================
+OLS Regression with HAC (Newey-West) Standard Errors
+============================================================

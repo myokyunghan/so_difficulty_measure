@@ -102,10 +102,8 @@ class Annotation_Operation:
         tot_prompt_tk = prompt_tokens + MAX_GENERATION + SAFETY_MARGIN
 
         if tot_prompt_tk > MAX_CONTEXT:
-            self.logger.warning(f"[Warning] Token limit exceeded: {tot_prompt_tk} > {MAX_CONTEXT}")
             return True
         else:
-            self.logger.warning(f"[Info] Token is safe: {tot_prompt_tk} < {MAX_CONTEXT}")
             return False
 
     def get_annotation_data(self):

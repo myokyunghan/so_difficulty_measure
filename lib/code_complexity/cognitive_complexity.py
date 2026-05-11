@@ -1,14 +1,17 @@
 import os
 
 import pandas as pd
+import numpy as np
 from lib.utils.file_io import open_src
 import lib.code_complexity.parser_loader as ps
 
 
-# ── 30개 언어 매핑 ──
 
 CALC_FUNC       = ps.CALC_FUNC
 CALC_PARSER     = ps.CALC_PARSER
+CALC_CLASS      = ps.CALC_CLASS
+
+HAS_ERROR_UNRELIABLE = {"groovy", "fsharp", "vbnet"}
 
 def call_cognitive_complexity(file, lang, save_dir_for_src, save_dir_for_csv):
     file_path = f'{save_dir_for_src}/{file}'
@@ -21,44 +24,68 @@ def call_cognitive_complexity(file, lang, save_dir_for_src, save_dir_for_csv):
         complexities = [r['complexity'] for r in results]
 
         if not complexities:
-            return False
+            top_level_complexities = call_cognitive_complexity_from_top(file_path, lang)
+            if not top_level_complexities:
+                return False
+            complexities = top_level_complexities
 
         pd.DataFrame(
             [[new_file, new_file, c] for c in complexities],
-            columns=['Path', 'File Name', 'Cognitive Complexity']
+            columns=['path', 'file_name', 'cognitive_complexity']
         ).to_csv(f'{save_dir_for_csv}/{new_file}')
-
-
-        # total_complexity = sum(complexities)
-        # max_complexity = max(complexities) if complexities else 0
-        # n_functions = len(complexities)
-        # avg_complexity = total_complexity / n_functions if complexities else 0
-        # pd.DataFrame([[new_file, new_file, dict(total=total_complexity, max=max_complexity, avg=avg_complexity, raw_complexities=complexities)]], columns=['Path', 'File Name', 'Cognitive Complexity'])\
-        #     .to_csv(f'{save_dir_for_csv}/{new_file}')
         return True
     else :
         return False
-    
 
-    
-
-
+def call_cognitive_complexity_from_top(file_path, lang):
+    try:
+        code = open_src(file_path)
+        calc = CALC_CLASS[lang](code)
+        calc.details = []
+        if calc.tree and not calc._parse_failed:
+            top_c = calc._visit_children(calc.tree.root_node, 0)
+            if top_c > 0:
+                return [top_c]
+            else:
+                return False  # top-level에도 control flow 없음
+        else:
+            return False
+    except Exception:
+        return False
 
 def check_code(file_path, lang):
     if lang == "assembly":
         return True
     code = open_src(file_path)
     parser = CALC_PARSER[lang]()
-    
-    # 잘못된 입력에서 parser가 hang하는 것을 방지
     try:
-        parser.timeout_micros = 5_000_000  # 5 seconds
+        parser.timeout_micros = 5_000_000
     except (AttributeError, TypeError):
-        pass  # 구버전 tree-sitter 미지원
-    
+        pass
     try:
         tree = parser.parse(bytes(code, "utf-8"))
-        return not tree.root_node.has_error
     except ValueError:
-        # parser timeout = 잘못된 입력
         return False
+    
+    if lang in HAS_ERROR_UNRELIABLE:
+        return True
+    
+    return not tree.root_node.has_error
+    
+
+    
+def calculate_cognitive_complexity(df, option_str):
+
+    df['cognitive_complexity'] = np.log(df['cognitive_complexity']+1)
+
+    if option_str == 'mean':
+        return df.groupby('id', as_index=False)['cognitive_complexity'].mean()
+    elif option_str == 'max':
+        return df.groupby('id', as_index=False)['cognitive_complexity'].max()
+    elif option_str == 'std':
+        return df.groupby('id', as_index=False)['cognitive_complexity'].std()
+    elif option_str == 'sum':
+        return df.groupby('id', as_index=False)['cognitive_complexity'].sum()
+    else:
+        raise ValueError(f"Invalid option_str: {option_str}")
+
