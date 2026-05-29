@@ -93,6 +93,8 @@ class ModelRunner:
             return self.lang in CONSTANTS.CYCLOMATIC_COMPLEXITY_SUPPORTED_LANGS
         elif self.metric == "rust_cognitive_complexity":
             return self.lang in CONSTANTS.RCA_SUPPORTED_LANGS
+        elif self.metric == "halstead_metrics":
+            return self.lang in CONSTANTS.HALSTEAD_METRICS_SUPPORTED_LANGS
         else:
             return False
 

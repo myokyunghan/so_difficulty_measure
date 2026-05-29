@@ -2,6 +2,13 @@ class CONSTANTS:
     verbose_loading = False
     all_topics_list = list(range(0, 50))
 
+    languages_from2020to2022=[  "python",   "javascript",   "java",     "c#",       "c++",
+                                "c",        "r",            "php",      "swift",    "kotlin",
+                                "dart",     "typescript",   "go",       "ruby",     "rust",
+                                "scala",    "julia",        "matlab",   "groovy",   "objective-c",
+                                "vb.net",   "assembly",     "haskell",  "delphi",   "lua",
+                                "perl",     "prolog",       "fortran",  "f#",       "solidity"]
+
     LANG_INFO = {
         # lizard 지원 언어
         'python':      ('py',    'python'),
@@ -25,7 +32,6 @@ class CONSTANTS:
         'fortran':     ('f90',   'fortran'),
         'solidity':    ('sol',   'solidity'),
         
-        # lizard 미지원 (확장자만, lizard 언어명은 None)
         'dart':        ('dart',   None),
         'julia':       ('jl',     None),
         'matlab':      ('m',      None), 
@@ -42,7 +48,6 @@ class CONSTANTS:
     "python":     "py",
     "javascript": "js",
     "typescript": "ts",
-    "java":       "java",
     "c++":        "cpp",
     "c":          "c",
     "rust":       "rs",

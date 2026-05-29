@@ -26,9 +26,10 @@ import multiprocessing as mp
 import re
 # https://github.com/meta-llama/llama-recipes/blob/main/recipes/quickstart/Prompt_Engineering_with_Llama_3.ipynb
 class Annotation_Operation:
-    def __init__(self, annoate_target, user_option):  
+    def __init__(self, annoate_target, user_option, vllm=None):  
         self.ollama         = ollama_setting['version']
         self.chatgpt        = OpenAI(api_key= OEPN_AI_KEY)
+        self.vllm           = VLLM(self.llm_model, self.model_name) if vllm is None else vllm
 
         self.df             = pd.DataFrame()
         self.eval_prompt    = []
@@ -185,7 +186,7 @@ class Annotation_Operation:
     def calc_acc_for_v(self, llm_model, few_shot_n, q_src_yn):
         self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v start!')
     
-        batch_size = 5
+        batch_size = 15
 
         for i in tqdm(range(0, len(self.message_list), batch_size)):
             batch = self.message_list[i:i+batch_size]
@@ -313,7 +314,7 @@ class Annotation_Operation:
 
         elif self.llm_model in ('vl', 'vq'):
             self.logger.info('load VLLM')
-            self.vllm = VLLM(self.llm_model, self.model_name)
+            # self.vllm = VLLM(self.llm_model, self.model_name)
             self.logger.info('start calc_acc_for_v')
             self.calc_acc_for_v(llm_model, few_shot_n, q_src_yn)
             self.logger.info('end calc_acc_for_v')
