@@ -104,7 +104,7 @@ class PlotGen:
 
     def set_title_two_lines(self, ax, prefix=None, title_text=None, p_value=None, gap=0.04):
         if p_value is not None:
-            p_txt = '($p$ < 0.001)' if p_value < 0.001 else ( 'n.s.' if p_value >= 0.05 else f'($p$ < 0.05)')
+            p_txt = '($p$ < 0.001)' if p_value < 0.001 else ( '(n.s.)' if p_value >= 0.05 else f'($p$ < 0.05)')
         else:
             p_txt = None
 
