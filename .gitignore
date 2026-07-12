@@ -212,3 +212,5 @@ __marimo__/
 
 *.png
 *.pdf
+*.svg
+*.gexf

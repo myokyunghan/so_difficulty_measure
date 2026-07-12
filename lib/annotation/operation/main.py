@@ -4,6 +4,7 @@ import argparse
 from lib.utils.file_io import save_json
 import lib.annotation.tools.Q_Extract as qe
 from lib.annotation.operation.annotation_operation import Annotation_Operation
+from lib.annotation.operation.annotation_operation_iter import Annotation_Operation_Iter
 
 from setting_for_sdm.param import param
 from run_project.annotate_difficulty.options import RunnerOptions
@@ -42,7 +43,7 @@ class ModelRunner:
                 df       = q_extract.db_extract()
                 q_output = q_extract.tb_extract(df)
                 print(f'[Q_Extract] {len(q_output)}건 추출 완료')
-                ap = Annotation_Operation(q_output, self.runner_opt.user_opt, vllm)
+                ap = Annotation_Operation_Iter(q_output, self.runner_opt.user_opt, vllm)
                 ap()
             else:
                 print('[ModelRunner] 어노테이션 대상 없음. 종료.')

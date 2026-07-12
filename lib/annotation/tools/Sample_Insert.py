@@ -67,4 +67,25 @@ class Sample_Insert:
             db_if.execute_bulk_values(sql, first_ann_q_id)     
 
     
+    def insert_target(self, p_id_df):
+        print("insert_target") 
 
+        dt_list = list(p_id_df['creationdate'].unique())
+
+        print("insert_target > create connection")
+        db_if = db_interface.DBInterface()
+
+        for dt in dt_list : 
+            print(f"insert_target > start insert {dt}")
+
+            c_sql = """select nextval(%s);""" 
+            rows = db_if.execute_query(c_sql, (self.seq_nm,))
+            var = rows[0]
+            
+            dt_p_id_list = p_id_df.loc[p_id_df['creationdate'] == dt, 'id'].values
+            print("insert_target > create connection> dt_p_id_list>", dt, len(dt_p_id_list))
+
+            first_ann_q_id = [[int(var[0]),dt , int(x)] for x in dt_p_id_list]
+            sql = f'INSERT INTO tt_posts_difficulty_target  VALUES %s'
+            db_if.execute_bulk_values(sql, first_ann_q_id)     
+            print(f"insert_target > completed insert {dt}")

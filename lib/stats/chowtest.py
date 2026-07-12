@@ -6,7 +6,7 @@ from scipy.stats import t
 import matplotlib.pyplot as plt
 
 
-class Stats:
+class ChowTest:
     def __init__(self, x, y, c, cutoff):
         self.x                  = x
         self.y                  = y

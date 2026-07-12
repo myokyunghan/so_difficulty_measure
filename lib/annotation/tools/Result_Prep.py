@@ -3,8 +3,46 @@ import numpy as np
 from datetime import datetime
 import os
 import re
+from setting_for_sdm.path_setting import path_list
+from lib.utils.file_io import *
 
 class Result_Prep: 
+    def __init__(self, target_idx) : 
+
+        self.viz_dir = f'{path_list["data_root_dir"]}/result/annotate_difficulty/run_id_{target_idx}'
+        self.data_dir = f"{self.viz_dir}/data/csv"
+
+        self.option_dict = load_json(f"{self.viz_dir}/option.json")
+        self.output_dir = create_dir('./fig/')
+        self.date_range = 'Weekly'
+
+        self.path = f"{self.viz_dir}/{self.option_dict['operation_option']['llm_model']}"
+        self.file_list = os.listdir(self.path)
+        self.ver_list = sorted([y for y in [x for x in self.file_list if x.isdigit()]])
+
+    
+    def data_prep(self) : 
+        tot_calc = pd.DataFrame()
+        for listid in self.ver_list:
+            df = self.make_one_file(listid, self.path)
+            if isinstance(df, pd.core.frame.DataFrame):
+                df = self.pp_df(df, 5)
+                if df.shape[0] >0 :  
+                    tot_calc = pd.concat([tot_calc, df], axis = 0)
+        
+        return_ = self.calc_rate_byweek(tot_calc)
+        
+        return return_
+    
+
+    def data_concat(self) : 
+        tot_calc = pd.DataFrame()
+        for listid in self.ver_list:
+            df = self.make_one_file(listid, self.path)
+            if isinstance(df, pd.core.frame.DataFrame):
+                tot_calc = pd.concat([tot_calc, df], axis = 0)
+        return tot_calc
+
     
     def make_one_file(self, ver, path=f'/home/mghan/sopjt/git/stackoverflow_src/LLM/result/'):
 

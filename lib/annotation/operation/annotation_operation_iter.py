@@ -25,7 +25,7 @@ import os
 import multiprocessing as mp
 import re
 # https://github.com/meta-llama/llama-recipes/blob/main/recipes/quickstart/Prompt_Engineering_with_Llama_3.ipynb
-class Annotation_Operation:
+class Annotation_Operation_Iter:
     def __init__(self, annoate_target, user_option, vllm=None):  
         self.ollama         = ollama_setting['version']
         self.chatgpt        = OpenAI(api_key= OEPN_AI_KEY)
@@ -41,6 +41,8 @@ class Annotation_Operation:
         self.annoate_target['creationdate'] = pd.to_datetime(self.annoate_target['creationdate']).dt.date
         self.date           = annoate_target.iloc[0,1]
         self.ver            = int(annoate_target.iloc[0,0])
+        self.target_q_id    = list(annoate_target['id'])
+        self.result_df      = pd.DataFrame()
 
         # predefined param
         operation_option            = user_option['operation_option']
@@ -74,17 +76,27 @@ class Annotation_Operation:
         self.logger.info('start get_annotation_data')
         self.get_annotation_data()
         self.logger.info('end get_annotation_data')
-        self.logger.info('start get_annotation_data')
-        e_f_dict = self.random_selection()
-        self.logger.info('end get_annotation_data')
-        self.logger.info('start write_prompt')
-        self.write_prompt(e_f_dict)
-        self.logger.info('end write_prompt')
-        self.logger.info('start calc_acc')
-        self.calc_acc()
-        self.logger.info('end calc_acc')
+            
+        for q_id in self.target_q_id : 
 
-        
+            while not self.get_result_df(q_id) :
+
+                self.logger.info(f'start random_selection for q_id: {q_id}')
+                e_f_dict = self.random_selection(q_id)
+                self.logger.info(f'end random_selection for q_id: {q_id}')
+
+                self.logger.info(f'start write_prompt for q_id: {q_id}')
+                self.write_prompt(e_f_dict)
+                self.logger.info(f'end write_prompt for q_id: {q_id}')
+
+                self.logger.info(f'start calc_acc for q_id: {q_id}')
+                result_df = self.calc_acc()
+                self.logger.info(f'end calc_acc for q_id: {q_id}')
+
+                self.logger.info(f'start set_result_df for q_id: {q_id}')
+                self.set_result_df(result_df, q_id)
+                self.logger.info(f'end set_result_df for q_id: {q_id}')
+
 
     def chk_max_length(self, message):
         self.tk             = AutoTokenizer.from_pretrained(vllm_setting[self.llm_model][self.model_name]['model'], use_fast=True)
@@ -118,22 +130,24 @@ class Annotation_Operation:
         for key, value in diff_idx.items():
             diff_population = value
             fewshot_q_list.append(np.random.choice(diff_population, size=few_shot_n, replace=True))
+
+        
+        self.logger.info(f'>>>>>>>>>>>>>>>set_fewshot_example for q_id: {fewshot_q_list}')
         return np.concatenate(fewshot_q_list)
     
-    def random_selection(self):
+    def random_selection(self, target_q):
         few_shot_n = self.few_shot_n
 
         diff_s_idx = {}
-        target_q_list = self.annoate_target.id
-
-        for target_q in target_q_list:
-            diff_s_idx[target_q] = dict()
-            for sf_idx in range(self.sc_num):
-                diff_s_idx[target_q][sf_idx] = self.set_fewshot_example(few_shot_n)
+        diff_s_idx[target_q] = dict()
+        for sf_idx in range(self.sc_num):
+            diff_s_idx[target_q][sf_idx] = self.set_fewshot_example(few_shot_n)
         return diff_s_idx
 
 
     def write_prompt(self, e_f_dict):
+        
+        self.message_list = []
 
         for eval_id, fewshot_dict in e_f_dict.items():
             for sc_idx, fewshot_id_list in fewshot_dict.items():
@@ -171,9 +185,6 @@ class Annotation_Operation:
                                                 })
                         break
 
-    # -------------------------------------------------------------------------
-    # 4. DB insert
-    # -------------------------------------------------------------------------
 
     def insert_result(self, result_df):
         db_if = db_interface.DBInterface()
@@ -182,12 +193,34 @@ class Annotation_Operation:
         data_list = [[int(x[1]), x[2], int(x[3])] for x in result_df.to_records()]
         sql = 'INSERT INTO tt_posts_difficulty_done  VALUES %s'
         db_if.execute_bulk_values(sql, data_list)  
-           
 
+    def set_result_df(self, r_df, q_id):
+        
+        self.result_df = pd.DataFrame()
+        result_list = r_df.loc[r_df['id'] == q_id, 'result'].unique()
+        self.logger.info(f'>>>>>>>>>>>>>>>set_result_df result list! {result_list}')
+        if len(result_list) == 1:
+            self.result_df = pd.merge(self.annoate_target[['ver', 'creationdate', 'id']], r_df, on='id')
+            self.result_df.to_csv(f'{self.save_dir}/{self.date}_{q_id}.csv')
+
+            self.insert_result(self.result_df)
+
+             
+    def get_result_df(self, q_id):
+        if self.result_df.empty:
+            return False
+        else : 
+            self.logger.info(f">>>>>>>>>>>>>>>get_result_df shape of dataset! {self.result_df[self.result_df['id'] == q_id].shape[0]}")
+            return (np.where(self.result_df[self.result_df['id'] == q_id].shape[0]>0, True, False)) 
+
+                
+    
+    
     def calc_acc_for_v(self, llm_model, few_shot_n, q_src_yn):
         self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v start!')
     
         batch_size = 15
+        self.logger.info(f'>>>>>>>>>>>>>>>calc_acc_for_v start self.message_list! {len(self.message_list)}')
 
         for i in tqdm(range(0, len(self.message_list), batch_size)):
             batch = self.message_list[i:i+batch_size]
@@ -202,15 +235,10 @@ class Annotation_Operation:
             for eval_id, response in zip(eval_ids, responses):
                 self.result.append([eval_id, response.outputs[0].text])
 
-        result_df = pd.DataFrame(self.result, columns=['id', 'result'])
-        result_df = pd.merge(self.annoate_target[['ver', 'creationdate', 'id']], result_df, on='id')
+        return pd.DataFrame(self.result, columns=['id', 'result'])
 
-        self.logger.info(f'save result! {self.save_dir}/{self.date}.csv')
-        result_df.to_csv(f'{self.save_dir}/{self.date}.csv')
+        
 
-        self.insert_result(result_df)
-        return result_df
-    
 
     def calc_acc_for_l(self):           
         for item in tqdm(self.message_list):
@@ -290,5 +318,7 @@ class Annotation_Operation:
             self.logger.info('load VLLM')
             # self.vllm = VLLM(self.llm_model, self.model_name)
             self.logger.info('start calc_acc_for_v')
-            self.calc_acc_for_v(llm_model, few_shot_n, q_src_yn)
+            r_df =self.calc_acc_for_v(llm_model, few_shot_n, q_src_yn)
             self.logger.info('end calc_acc_for_v')
+        
+        return r_df

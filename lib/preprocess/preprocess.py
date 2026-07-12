@@ -64,6 +64,9 @@ class CodeSectionParser:
         self.code_section_start = "<pre><code>"
         self.code_section_end = "</code></pre>"
 
+        self.code_section_list = ["<pre><code>", '<pre class="lang-none prettyprint-override"><code>', '<pre class="lang-py prettyprint-override"><code>']
+        self.code_section_start_pattern = r"<pre\s.*?><code>"
+
         self.html_entities = {
             "&nbsp": "",
             "&amp": "&",
@@ -113,7 +116,7 @@ class CodeSectionParser:
         Returns:
             a list of dict
         """
-        if self.code_section_start in post_str:
+        if any(css in post_str for css in self.code_section_list):
             to_return = self.get_spans_of_code_sections(post_str=post_str)
         else:
             to_return = []
@@ -132,9 +135,9 @@ class CodeSectionParser:
                 "span_str": a str
             }
         """
-        start_offsets = [
-            m.start() for m in re.finditer(self.code_section_start, post_str)
-        ]
+        start_offsets = {m.start(): css for css in self.code_section_list for m in re.finditer(css, post_str)}
+        start_offsets = dict(sorted(start_offsets.items()))
+
         end_offsets = [
             m.start() for m in re.finditer(self.code_section_end, post_str)
         ]
@@ -142,7 +145,7 @@ class CodeSectionParser:
             return []
         to_return = []
         for idx, offset_begin in enumerate(start_offsets):
-            offset_begin += len(self.code_section_start)
+            offset_begin += len(start_offsets[offset_begin])
             offset_end = end_offsets[idx]
             span_ = post_str[offset_begin:offset_end]
             to_return.append({
