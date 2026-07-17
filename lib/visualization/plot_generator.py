@@ -121,3 +121,36 @@ class PlotGen:
                     fontsize=figure_setting.FONT['title'] - 2,
                     ha='left', va='bottom',
                     color='#555', fontweight='normal')
+
+    def set_x_ticks_for_e_log(self, ax, real_ticks):
+        tick_positions = np.log(real_ticks)
+        ax.set_xticks(tick_positions)
+        ax.set_xticklabels([str(self.format_sci(v)) for v in real_ticks])
+
+
+    def get_x_ticks_for_e_log(self, x_min, x_max):
+        x_ticks = []
+        target_xtick_list = sum([ [int(j), int(j*5)] for j in [10**i for i in range(1, 100) if 10**i < x_max]], [])
+        for i in target_xtick_list:
+            if x_min <= i <= x_max:
+                x_ticks.append(i)
+        return x_ticks
+
+
+    def to_superscript(self, n):
+        superscript_map = {
+            '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
+            '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
+            '-': '⁻'
+        }
+        return ''.join(superscript_map[d] for d in str(n))
+
+    def format_sci(self, val):
+        exponent = int(np.floor(np.log10(val)))
+        coeff = val / (10 ** exponent)
+
+        if np.isclose(coeff, round(coeff)) and round(coeff) == 1:
+            return f'10{self.to_superscript(exponent)}'
+        else:
+            coeff_str = f'{coeff:.0f}' if coeff == int(coeff) else f'{coeff:.1f}'
+            return f'{coeff_str}×10{self.to_superscript(exponent)}'

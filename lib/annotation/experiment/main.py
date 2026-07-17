@@ -4,7 +4,9 @@ from setting_for_sdm.date_setting import Date_Setting
 from setting_for_sdm.path_setting import path_list
 from lib.utils.file_io import save_json, create_dir
 from run_project.annotate_difficulty.options import RunnerOptions
-from lib.annotation.experiment.annotation_experiment import Annotation_Experiment
+# from lib.annotation.experiment.annotation_experiment_iter import Annotation_Experiment_Iter
+from lib.annotation.experiment.annotation_experiment_md import Annotation_Experiment_MD
+from lib.annotation.tools.loghander import *
 
 class ModelRunner:
 
@@ -27,11 +29,13 @@ class ModelRunner:
         
     def run_experiment(self, user_opt) :
         experiment_option = user_opt['experiment_option']
+        init_logger(user_opt['log_dir'])
+
         print(f">>>>>>>Experiment Start<<<<<<<<{experiment_option['llm_model']}_{experiment_option['few_shot_n']}_{experiment_option['test_n']}_{experiment_option['q_src_yn']}_{experiment_option['prompt_ver']}_{experiment_option['sc_num']}")
         for i in range(experiment_option['iteration_num']):
             print(f"Test {i} Running: ")
             user_opt['experiment_option']['loop_num'] = i
-            exp = Annotation_Experiment(user_opt)
+            exp = Annotation_Experiment_MD(user_opt)
             exp()
         
         print(f">>>>>>>Experiment Start<<<<<<<<{experiment_option['llm_model']}_{experiment_option['few_shot_n']}_{experiment_option['test_n']}_{experiment_option['q_src_yn']}_{experiment_option['prompt_ver']}_{experiment_option['sc_num']}")

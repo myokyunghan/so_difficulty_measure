@@ -38,7 +38,28 @@ class Q_Extract:
         """
         return db_if.execute_query(q_sql, (self.ver,))
     
-      
+
+    def chk_left_for_full_target(self):
+        db_if = db_interface.DBInterface()
+
+        q_sql = """
+                select count(*) as cnt, min(to_char(aa.creationdate, 'yyyy-mm-dd')) as date
+                from tt_post_python_difficulty_target aa
+                    , (select ver, to_char(creationdate, 'yyyy-mm-dd') as std_date
+                        from tt_post_python_difficulty_target a
+                        where not exists (select 1
+                                            from tt_post_python_difficulty_done x
+                                        where a.id = x.id
+                                        and a.ver = x.ver)
+                        order by a.ver, a.creationdate
+                        limit 1
+                ) bb
+                where aa.ver = bb.ver
+                and to_char(aa.creationdate, 'yyyy-mm-dd') = bb.std_date
+                ;  
+        """
+        return db_if.execute_query(q_sql, (self.ver,))
+        
     def chg_tag(self, code):
         st_pattern = r'<pre(?: class="[^"]*")?><code>'
         st_dst = "```python\n"
@@ -85,7 +106,39 @@ class Q_Extract:
                 ])
         return q_output
 
+    def db_extract_for_full_target(self):
+        db_if = db_interface.DBInterface()
+        q_sql = """
+                    select aa.ver, aa.creationdate, aa.id, cc.title, dd.body
+                    from tt_post_python_difficulty_target aa
+                        , (select ver, to_char(creationdate, 'yyyy-mm-dd') as std_date 
+                            from tt_post_python_difficulty_target a 
+                            where not exists (select 1 
+                                                from tt_post_python_difficulty_done x 
+                                            where a.id = x.id
+                                              and a.ver = x.ver)
+                            order by a.ver, a.creationdate
+                            limit 1
+                    ) bb ,
+                    posts cc,
+                    postsbody dd 
+                    where aa.ver = bb.ver
+                    and to_char(aa.creationdate, 'yyyy-mm-dd') = std_date
+                    and aa.id = cc.id 
+                    and aa.id  = dd.id
+                ;  
+        """
+
+        rows = db_if.execute_query(q_sql, (self.ver,))
         
+        q_output = pd.DataFrame(rows, columns = [
+                'ver',
+                'creationdate',
+                'id',
+                'title',
+                'body'
+                ])
+        return q_output  
 
 
     def tb_extract(self, q_output):

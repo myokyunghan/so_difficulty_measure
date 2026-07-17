@@ -1,23 +1,22 @@
 import re
-import argparse
+import datetime as dt
 
 from lib.utils.file_io import save_json
-import lib.annotation.tools.Q_Extract as qe
+from lib.utils.file_io import create_dir
+
+from lib.annotation.tools.loghander import *
+from lib.annotation.tools.VLLM import VLLM
 from lib.annotation.operation.annotation_operation import Annotation_Operation
-from lib.annotation.operation.annotation_operation_iter import Annotation_Operation_Iter
+import lib.annotation.tools.Q_Extract as qe
 
 from setting_for_sdm.param import param
 from run_project.annotate_difficulty.options import RunnerOptions
 
-from lib.utils.file_io import create_dir
-from lib.annotation.tools.VLLM import VLLM
-from lib.annotation.tools.loghander import *
 
 class ModelRunner:
 
-    def __init__(self, ver, runner_opt):
+    def __init__(self, runner_opt):
         self.runner_opt       = runner_opt
-        self.ver              = ver
         self.operation_option = self.runner_opt.user_opt['operation_option']
         self.save_dir         = f"{self.runner_opt.user_opt['save_dir']}"
         init_logger(self.runner_opt.user_opt['log_dir'])
@@ -27,17 +26,32 @@ class ModelRunner:
 
     def run(self):
         create_dir(self.save_dir)
-        self.run_annotation_iterative()
+        self.run_annotation_iterative_full_target()
         self.save_option()
 
-    def run_annotation_iterative(self):
-        # ver는 숫자 문자열이어야 함 (e.g. '150000')
-        # 'ver150000' 형태로 넘어온 경우를 방어적으로 처리
+    def run_annotation_iterative_full_target(self):
         vllm = VLLM(self.operation_option['llm_model'], self.operation_option['model_ver'])
-        ver = re.findall(r'\d+', str(self.ver))[0]
-    
-        while True : 
-            q_extract = qe.Q_Extract(ver)
+        
+        while self.time_check(20) : 
+            q_extract = qe.Q_Extract('python')
+            cnt       = q_extract.chk_left_for_full_target()
+            print(f'[Q_Extract] 남은 건수: {cnt[0][0]}, 기준 날짜: {cnt[0][1]}')
+
+            if cnt[0][0] > 0:
+                df       = q_extract.db_extract_for_full_target()
+                q_output = q_extract.tb_extract(df)
+                print(f'[Q_Extract] {len(q_output)}건 추출 완료')
+                ap = Annotation_Operation(q_output, self.runner_opt.user_opt, vllm)
+                ap()
+            else:
+                print('[ModelRunner] 어노테이션 대상 없음. 종료.')
+                break
+
+    def run_annotation_iterative(self):
+        vllm = VLLM(self.operation_option['llm_model'], self.operation_option['model_ver'])
+        
+        while self.time_check(20) : 
+            q_extract = qe.Q_Extract('python')
             cnt       = q_extract.chk_left()
             print(f'[Q_Extract] 남은 건수: {cnt[0][0]}, 기준 날짜: {cnt[0][1]}')
 
@@ -45,7 +59,7 @@ class ModelRunner:
                 df       = q_extract.db_extract()
                 q_output = q_extract.tb_extract(df)
                 print(f'[Q_Extract] {len(q_output)}건 추출 완료')
-                ap = Annotation_Operation_Iter(q_output, self.runner_opt.user_opt, vllm)
+                ap = Annotation_Operation(q_output, self.runner_opt.user_opt, vllm)
                 ap()
             else:
                 print('[ModelRunner] 어노테이션 대상 없음. 종료.')
@@ -73,19 +87,21 @@ class ModelRunner:
         save_json(self.runner_opt.user_opt, f'{self.save_dir}/option.json')
         print(f'[Saved] runner option → {self.save_dir}/option.json')
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="이 프로그램은 파라미터를 처리합니다.")
-    parser.add_argument("param1", type=str, help="")
-    args = parser.parse_args()
 
+    
+    def time_check(self, til_when):
+        now = dt.datetime.now()
+        return now.hour < til_when
+
+if __name__ == "__main__":
     
     runner_opt = RunnerOptions(
         'operation',
-        '111110000',
+        'python_1',
         param
     )
 
-    runner = ModelRunner(args.param1, runner_opt)
+    runner = ModelRunner(runner_opt)
     runner()
 
     

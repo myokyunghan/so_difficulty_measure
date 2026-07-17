@@ -53,8 +53,7 @@ class Annotation_Experiment:
 
         self.tk             = AutoTokenizer.from_pretrained(vllm_setting[self.llm_model][self.model_name]['model'], use_fast=True)
         
-        self.logger         = get_userlogger(user_option['log_dir'])
-        self.logger.setLevel(logging.INFO)
+        self.logger         = get_logger()
         
         self.logger.info(
             f'param: {self.llm_model} | {self.model_name} | '

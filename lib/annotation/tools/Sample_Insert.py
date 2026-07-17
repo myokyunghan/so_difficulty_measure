@@ -89,3 +89,4 @@ class Sample_Insert:
             sql = f'INSERT INTO tt_posts_difficulty_target  VALUES %s'
             db_if.execute_bulk_values(sql, first_ann_q_id)     
             print(f"insert_target > completed insert {dt}")
+    

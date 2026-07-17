@@ -46,7 +46,7 @@ vllm_setting = {
                             'params'                : {
                                                         'temperature'   : 0.01,
                                                         'top_p'         : 0.9,
-                                                        'max_tokens'    : 10
+                                                        'max_tokens'    : 300
                                                     }
                         }
 
