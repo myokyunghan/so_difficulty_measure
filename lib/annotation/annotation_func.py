@@ -3,6 +3,7 @@ import multiprocessing as mp
 import pandas as pd
 import numpy as np
 from setting_for_sdm.constants import CONSTANTS
+from setting_for_sdm.llm_setting import (vllm_setting, ollama_setting)
 from lib.annotation.tools.VLLM import VLLM
 from lib.annotation.tools.loghander import *
 from tqdm import tqdm
@@ -10,7 +11,7 @@ from transformers import AutoTokenizer
 import re
 import random
 
-def chk_max_length(message, tk):
+def chk_max_length(message, tk, max_model_len):
     prompt = tk.apply_chat_template(
         message,
         tokenize=False,
@@ -18,7 +19,8 @@ def chk_max_length(message, tk):
     )
     prompt_tokens = len(tk.encode(prompt))
 
-    MAX_CONTEXT = tk.model_max_length
+    MAX_CONTEXT = tk.model_max_length if max_model_len is None else max_model_len
+    
     MAX_GENERATION = 256
     SAFETY_MARGIN = 128
 
@@ -73,6 +75,8 @@ def select_fewshot_for_e(df, eval_q_id_list, few_shot_n, sc_num, test_n):
     return diff_s_idx
 
 
+
+
 def get_result_df(eval_df, q_id):
     if eval_df.empty:
         return False
@@ -100,7 +104,7 @@ def random_selection(df, few_shot_n, annoate_target, sc_num):
             diff_s_idx[target_q][sf_idx] = set_fewshot_example_for_op(df, few_shot_n)
     return diff_s_idx
 
-def write_prompt_exp(golden_df, e_f_dict, few_shot_n, sys_prompt, tk):
+def write_prompt_exp(golden_df, e_f_dict, few_shot_n, sys_prompt, tk, max_model_len):
     logger         = get_logger()
     message_list = []
 
@@ -133,7 +137,7 @@ def write_prompt_exp(golden_df, e_f_dict, few_shot_n, sys_prompt, tk):
 
                 message.append({"role": "user", "content": target_post})
 
-                if chk_max_length(message, tk):
+                if chk_max_length(message, tk, max_model_len):
                     # 다시 샘플링
                     fewshot_id_list = set_fewshot_example_for_exp(golden_df, eval_id, few_shot_n)
                 else:
@@ -145,8 +149,52 @@ def write_prompt_exp(golden_df, e_f_dict, few_shot_n, sys_prompt, tk):
 
     return message_list
 
+def write_prompt_vali(golden_df, validation_df, e_f_dict, few_shot_n, sys_prompt, tk, max_model_len):
+    logger         = get_logger()
+    message_list = []
 
-def write_prompt_op(golden_df, annoate_target, e_f_dict, few_shot_n, sys_prompt, tk):
+    for eval_id, fewshot_dict in e_f_dict.items():
+        for sc_idx, fewshot_id_list in fewshot_dict.items():
+
+            while True:
+                message = []
+                message.append({"role": "system", "content": sys_prompt})
+
+                for fewshot_id in fewshot_id_list:
+
+                    q_string = golden_df.loc[golden_df['id']    == fewshot_id, 'question'].iloc[0]
+                    a_string = golden_df.loc[golden_df['id']    == fewshot_id, 'answer'].iloc[0]
+                    t_string = validation_df.loc[validation_df['id'] == eval_id, 'question'].iloc[0]
+
+                    q_prompt = ("\nHere is the examples of question.\n" 
+                                "\n<Example>\n"
+                                + q_string + "\n</Example>\n"
+                                )
+
+                    message.append({"role": "user", "content": q_prompt})
+                    message.append({"role": "assistant", "content": a_string})
+
+                target_post = (
+                    "\nHere is the target post. Answer the \"Difficulty Level\".\n"
+                    "\n<Target_post>\n"
+                    + t_string + "\n</Target_post>\n"
+                )
+
+                message.append({"role": "user", "content": target_post})
+
+                if chk_max_length(message, tk, max_model_len):
+                    # 다시 샘플링
+                    fewshot_id_list = set_fewshot_example_for_exp(golden_df, eval_id, few_shot_n)
+                else:
+                    message_list.append({
+                                                "eval_id": eval_id,
+                                                "message": message
+                                            })
+                    break
+
+    return message_list
+
+def write_prompt_op(golden_df, annoate_target, e_f_dict, few_shot_n, sys_prompt, tk, max_model_len):
     logger         = get_logger()
     message_list = []
 
@@ -179,7 +227,7 @@ def write_prompt_op(golden_df, annoate_target, e_f_dict, few_shot_n, sys_prompt,
 
                 message.append({"role": "user", "content": target_post})
 
-                if chk_max_length(message, tk):
+                if chk_max_length(message, tk, max_model_len):
                     # 다시 샘플링
                     fewshot_id_list = set_fewshot_example_for_op(golden_df, few_shot_n)
                 else:

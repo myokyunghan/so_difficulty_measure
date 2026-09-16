@@ -17,12 +17,16 @@ class RunnerOptions:
         
         # year_range chk
         list_ = list(Date_Setting.keys())
-        file_path = self.get_annotation_filepath(dict_)
+        anno_file_path = self.get_annotation_filepath(dict_)
 
-        
+        if not os.path.isfile(anno_file_path):
+            raise ValueError(f"There's no annotated file. Please save the annotated file to {anno_file_path}")
 
-        if not os.path.isfile(file_path):
-            raise ValueError(f"There's no annotated file. Please save the annotated file to {file_path}")
+
+        if mode in (["validation"]):
+            vali_file_path = self.get_validation_filepath(dict_)
+            if not os.path.isfile(vali_file_path):
+                raise ValueError(f"There's no validation file. Please save the validation file to {vali_file_path}")
         
 
     def get_annotation_filepath(self, dict_):
@@ -33,7 +37,14 @@ class RunnerOptions:
         
         return f'{file_path}{excel[dict_["excel_ver"]]}.csv'
 
+
+    def get_validation_filepath(self, dict_):
+        file_path = f"{path_list['data_root_dir']}/result/annotate_difficulty"    
         
+        if dict_['q_src_yn'] == "Y":
+            file_path = f'{file_path}/q_output_code_y'
+        
+        return f'{file_path}{excel[dict_["vali_ver"]]}.csv'      
 
     def set_opt(self, mode, run_id, dict_) : 
         
@@ -47,6 +58,18 @@ class RunnerOptions:
                                     "experiment_option" : dict_
                                     
                         }
+
+        elif mode == "validation":
+                    self.user_opt = {
+                                            "run_id": run_id,
+                                            "annotation_file_path" : self.get_annotation_filepath(dict_),
+                                            "validation_file_path" : self.get_validation_filepath(dict_),
+                                            "save_dir": f"{path_list['data_root_dir']}/result/annotate_difficulty/{mode}",    
+                                            "log_dir": f"{path_list['data_root_dir']}/result/annotate_difficulty/{mode}/log",    
+                                            "selected_tags": None,
+                                            "experiment_option" : dict_
+                                            
+                                }
             
 
         else :

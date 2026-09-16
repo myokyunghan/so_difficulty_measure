@@ -24,7 +24,7 @@ class PlotGen:
                     yerr=yerr,
                     fmt='o', 
                     color=color, 
-                    markersize=8, capsize=4,
+                    markersize=6, capsize=3,
                     capthick=1.3, lw=1.3,
                     markerfacecolor=color if sig else 'white',
                     markeredgecolor=color, markeredgewidth=1.5,

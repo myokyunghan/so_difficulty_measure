@@ -19,38 +19,46 @@ class ModelRunner:
         self.runner_opt       = runner_opt
         self.operation_option = self.runner_opt.user_opt['operation_option']
         self.save_dir         = f"{self.runner_opt.user_opt['save_dir']}"
+
         init_logger(self.runner_opt.user_opt['log_dir'])
+        self.logger         = get_logger()
 
     def __call__(self):
         self.run()
 
     def run(self):
+        self.logger.info('ModelRunner >> start run')
         create_dir(self.save_dir)
         self.run_annotation_iterative_full_target()
         self.save_option()
 
     def run_annotation_iterative_full_target(self):
+        self.logger.info('ModelRunner >> start run_annotation_iterative_full_target')
+        self.logger.info('ModelRunner >> call VLLM')
         vllm = VLLM(self.operation_option['llm_model'], self.operation_option['model_ver'])
         
-        while self.time_check(20) : 
+        while self.time_check(23, 9) : 
+        # while self.time_check(17, 12) : 
+            self.logger.info('ModelRunner >> start Q_Extract')
             q_extract = qe.Q_Extract('python')
             cnt       = q_extract.chk_left_for_full_target()
-            print(f'[Q_Extract] 남은 건수: {cnt[0][0]}, 기준 날짜: {cnt[0][1]}')
+            self.logger.info(f'ModelRunner >> [Q_Extract] 남은 건수: {cnt[0][0]}, 기준 날짜: {cnt[0][1]}')
 
             if cnt[0][0] > 0:
                 df       = q_extract.db_extract_for_full_target()
                 q_output = q_extract.tb_extract(df)
-                print(f'[Q_Extract] {len(q_output)}건 추출 완료')
+                self.logger.info(f'ModelRunner >> [Q_Extract] {len(q_output)}건 추출 완료')
+                self.logger.info(f'ModelRunner >> start Annotation_Operation')
                 ap = Annotation_Operation(q_output, self.runner_opt.user_opt, vllm)
                 ap()
             else:
-                print('[ModelRunner] 어노테이션 대상 없음. 종료.')
+                self.logger.info(f'ModelRunner >> 어노테이션 대상 없음. 종료')
                 break
 
     def run_annotation_iterative(self):
         vllm = VLLM(self.operation_option['llm_model'], self.operation_option['model_ver'])
         
-        while self.time_check(20) : 
+        while self.time_check(22, 12) : 
             q_extract = qe.Q_Extract('python')
             cnt       = q_extract.chk_left()
             print(f'[Q_Extract] 남은 건수: {cnt[0][0]}, 기준 날짜: {cnt[0][1]}')
@@ -89,9 +97,10 @@ class ModelRunner:
 
 
     
-    def time_check(self, til_when):
+    def time_check(self, start_from, til_when):
         now = dt.datetime.now()
-        return now.hour < til_when
+        self.logger.info(f'ModelRunner >> start time_check {now}')
+        return (now.hour < til_when) or (now.hour >= start_from)
 
 if __name__ == "__main__":
     

@@ -147,32 +147,46 @@ class CONSTANTS:
 
     
     codebert_languages = ["python", "java", "javascript", "php", "ruby", "go"]
-#     early_2010s_languages = ["dart", "kotlin", "julia", "typescript",
-#                              "elixir", "swift", "hacklang", "elm",
-#                              "red-lang", "crystal-lang"]
-#     late_2010s_languages = ["rust", "raku", "ring", "zig", "ballerina",
-#                             "vlang", "reason"]
-#     popular_10_languages = ["python", "c++", "java", "c", "c#",
-#                             "javascript", "vb.net", "go", "fortran", "delphi"]
-#     popular_10_languages_2023 = ["python", "c++", "java", "c", "c#",
-#                                  "javascript", "vb.net", "sql", "php",
-#                                  "assembly"]
-#     github_octoverse_2022_languages = ["javascript", "python", "java",
-#                                        "typescript", "c#", "c++", "php",
-#                                        "shell", "c", "ruby"]
 
-#     lang_tag_dict = {'python' : 'python',
-#                 'cpp': 'c++',
-#                 'java':'java',
-#                 'vba':'vba'
-#                 }
-    
+    language_map = {
+        "python": "Python",
+        "javascript": "JavaScript",
+        "java": "Java",
+        "c#": "C#",
+        "c++": "C++",
 
-#     tag_lang_dict = {'python' : 'python',
-#                 'c++': 'cpp',
-#                 'java':'java',
-#                 'vba':'vba'
-#     }
+        "c": "C",
+        "r": "R",
+        "php": "PHP",
+        "swift": "Swift",
+        "kotlin": "Kotlin",
+
+        "dart": "Dart",
+        "typescript": "TypeScript",
+        "go": "Go",
+        "ruby": "Ruby",
+        "rust": "Rust",
+
+        "scala": "Scala",
+        "julia": "Julia",
+        "matlab": "MATLAB",
+        "groovy": "Groovy",
+        "objective-c": "Objective-C",
+
+        "vb.net": "Visual Basic .NET",
+        "assembly": "Assembly",
+        "haskell": "Haskell",
+
+        # CSV에 Delphi라는 값은 없음
+        "delphi": None,
+
+        "lua": "Lua",
+        "perl": "Perl",
+        "prolog": "Prolog",
+        "fortran": "Fortran",
+        "f#": "F#",
+        "solidity": "Solidity"
+    }
     
     DIFF_DICT = {'Difficulty Level : Basic':        '<Difficulty Level>0</Difficulty Level>' ,
             'Difficulty Level : Intermediate':  '<Difficulty Level>1</Difficulty Level>', 

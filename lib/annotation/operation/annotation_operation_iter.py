@@ -62,7 +62,7 @@ class Annotation_Operation_Iter:
         self.save_dir           = f'{user_option["save_dir"]}/{self.llm_model}/{self.ver}'
 
         # log setting
-        self.logger         = get_userlogger(user_option['log_dir'])
+        self.logger         = get_logger()
         self.logger.setLevel(logging.INFO)
         
         self.logger.info(f'param for sample self consistency : {self.llm_model} | {self.few_shot_n} | {self.q_src_yn} | {self.sys_prompt} | {self.sc_num} | {self.temperature} | {self.excel_ver}' )

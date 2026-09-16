@@ -11,5 +11,11 @@ sequence = {
          , 1111  : 'seq_sample_ver_1111'
          , 11111  : 'seq_sample_ver_11111'
 
+         , 12121 : 'seq_sample_ver_12121' # 5, 10, 15, 20
+         , 55555 : 'seq_sample_ver_55555' 
+         , 55556 : 'seq_sample_ver_55556'
+         , 55557 : 'seq_sample_ver_55557'
+         , 55558 : 'seq_sample_ver_55558'
+
          , 'python_q' : 'seq_target_for_python_q'
          }  

@@ -82,7 +82,8 @@ class Annotation_Operation:
         self.logger.info('end random_selection')
 
         self.logger.info('start write_prompt')
-        message_list = write_prompt_op(self.golden_df,self.annoate_target, e_f_dict, self.few_shot_n, self.sys_prompt, self.tk)
+        max_model_len = vllm_setting[self.llm_model][self.model_name]['max_model_len']
+        message_list = write_prompt_op(self.golden_df,self.annoate_target, e_f_dict, self.few_shot_n, self.sys_prompt, self.tk, max_model_len)
         self.logger.info('end write_prompt')
 
         self.logger.info('start calc_acc')
@@ -117,17 +118,21 @@ class Annotation_Operation:
 
     def save_result(self, r_df):
         db_if = db_interface.DBInterface()
-        
+        self.logger.info(f'>>>>>>>>>>>>>>>! start set_eval_df/save_eval_df')
         result_df = pd.merge(self.annoate_target[['ver', 'creationdate', 'id']], r_df, on='id')
 
-        # self.logger.info(f'save result! {self.save_dir}/{self.date}.csv')
-        # result_df.to_csv(f'{self.save_dir}/{self.date}.csv')
+        self.logger.info(f'save result! {self.save_dir}/{self.date}.csv')
+        result_df.to_csv(f'{self.save_dir}/{self.date}.csv')
 
-        # result_df = result_df[['ver', 'creationdate', 'id']].drop_duplicates()
-
-        data_list = [[int(x[1]), x[2], int(x[3]), x[4]] for x in result_df.to_records()]
-        sql = 'INSERT INTO tt_post_python_difficulty_done  VALUES %s'
+        result_df = result_df[['ver', 'creationdate', 'id']].drop_duplicates()
+        self.logger.info('chk1')
+        # data_list = [[int(x[1]), x[2], int(x[3]), x[4]] for x in result_df.to_records()]
+        data_list = [[int(x[1]), x[2], int(x[3])] for x in result_df.to_records()]
+        self.logger.info('chk2')
+        sql = 'INSERT INTO tt_posts_difficulty_done  VALUES %s'
+        self.logger.info('chk3')
         db_if.execute_bulk_values(sql, data_list)  
+        self.logger.info('chk4')
            
 
     def calc_acc(self, message_list):
